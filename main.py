@@ -302,6 +302,7 @@ app = FastAPI()
 
 # Include routers
 app.include_router(auth_router)
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
