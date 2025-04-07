@@ -3,8 +3,11 @@ from typing import List, Optional, Dict, Any
 import os
 import logging
 from auth_api import router as auth_router
+<<<<<<< HEAD
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
+=======
+>>>>>>> f7a6782 (feat: fastapi project)
 
 # Import TMDb recommendation system
 from tmdb_integration import TMDbRecommendationSystem
