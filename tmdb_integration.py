@@ -247,6 +247,14 @@ class TMDbRecommendationSystem:
                 query=query,
                 top_n=top_n
             )
+
+                # Add detailed movie data for each recommendation
+        movie_data = []
+        for movie_id in recommendations['id']:
+            movie_info = self.get_movie_by_id(movie_id)
+            movie_data.append(movie_info if movie_info is not None else {})
+        
+        recommendations['movie_data'] = movie_data
             
         # Convert to list of dictionaries
         return recommendations.to_dict(orient='records')

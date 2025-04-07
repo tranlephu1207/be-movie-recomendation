@@ -24,80 +24,159 @@ class ContentBasedRecommender:
             credits_path: Path to credits CSV
             keywords_path: Path to keywords CSV
         """
-        self.nlp = spacy.load("en_core_web_sm")
-        self.metadata_df = None
-        self.tfidf_matrix = None
-        self.vectorizer = None
-        self.load_data(metadata_path, links_path, credits_path, keywords_path)
-        self.process_data()
-        self.create_profiles()
-        self.build_model()
+        try:
+            # Initialize spaCy with fallback
+            try:
+                self.nlp = spacy.load("en_core_web_sm")
+            except Exception as e:
+                print(f"Warning: Could not load spaCy model: {str(e)}")
+                print("Attempting to download spaCy model...")
+                try:
+                    import subprocess
+                    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
+                    self.nlp = spacy.load("en_core_web_sm")
+                except Exception as download_error:
+                    print(f"Could not download spaCy model: {str(download_error)}")
+                    self.nlp = None
+
+            self.metadata_df = None
+            self.tfidf_matrix = None
+            self.vectorizer = None
+            self.load_data(metadata_path, links_path, credits_path, keywords_path)
+            self.process_data()
+            self.create_profiles()
+            self.build_model()
+        except Exception as e:
+            print(f"Error initializing recommender: {str(e)}")
+            raise
     
     def load_data(self, metadata_path: str, links_path: str, credits_path: str, keywords_path: str) -> None:
         """
         Load and prepare movie metadata.
+        Handle missing credits file gracefully.
         """
-        # Load data
-        metadata = pd.read_csv(metadata_path)
-        links_small = pd.read_csv(links_path)
-        credits = pd.read_csv(credits_path)
-        keywords = pd.read_csv(keywords_path)
-        
-        # Process IDs
-        links_small = links_small[links_small['tmdbId'].notnull()]['tmdbId'].astype('int')
-        metadata['id'] = pd.to_numeric(metadata['id'], errors='coerce', downcast='integer')
-        metadata = metadata.dropna(subset=['id']).astype({'id': 'int'})
-        metadata = metadata[metadata['id'].isin(links_small)]
-        
-        # Merge datasets
-        keywords['id'] = keywords['id'].astype('int')
-        credits['id'] = credits['id'].astype('int')
-        metadata['id'] = metadata['id'].astype('int')
-        metadata = metadata.merge(credits, on='id')
-        metadata = metadata.merge(keywords, on='id')
-        
-        # Select relevant columns
-        self.metadata_df = metadata[['genres', 'id', 'imdb_id', 'overview', 'popularity',
-                               'production_companies', 'spoken_languages', 'title',
-                               'vote_average', 'vote_count', 'cast', 'crew', 'keywords']]
+        try:
+            # Load required data
+            metadata = pd.read_csv(metadata_path)
+            links_small = pd.read_csv(links_path)
+            
+            # Process IDs
+            links_small = links_small[links_small['tmdbId'].notnull()]['tmdbId'].astype('int')
+            metadata['id'] = pd.to_numeric(metadata['id'], errors='coerce', downcast='integer')
+            metadata = metadata.dropna(subset=['id']).astype({'id': 'int'})
+            metadata = metadata[metadata['id'].isin(links_small)]
+            
+            # Try to load optional data
+            try:
+                credits = pd.read_csv(credits_path)
+                credits['id'] = credits['id'].astype('int')
+                metadata = metadata.merge(credits, on='id', how='left')
+            except Exception as e:
+                print(f"Warning: Could not load credits data: {str(e)}")
+            
+            try:
+                keywords = pd.read_csv(keywords_path)
+                keywords['id'] = keywords['id'].astype('int')
+                metadata = metadata.merge(keywords, on='id', how='left')
+            except Exception as e:
+                print(f"Warning: Could not load keywords data: {str(e)}")
+            
+            # Select relevant columns that exist
+            required_columns = ['genres', 'id', 'imdb_id', 'overview', 'popularity',
+                              'production_companies', 'spoken_languages', 'title',
+                              'vote_average', 'vote_count']
+            optional_columns = ['cast', 'crew', 'keywords']
+            
+            # Get all available columns
+            available_columns = [col for col in required_columns + optional_columns 
+                               if col in metadata.columns]
+            
+            self.metadata_df = metadata[available_columns]
+            
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            raise
     
     def process_data(self) -> None:
         """
         Process the metadata to extract relevant features.
+        Handles missing columns gracefully.
         """
-        # Parse string data to lists
-        features = ['crew', 'cast', 'keywords', 'genres', 'production_companies', 'spoken_languages']
-        for feature in features:
-            self.metadata_df[feature] = self.metadata_df[feature].apply(lambda x: literal_eval(x) if isinstance(x, str) else x)
-        
-        # Extract director
-        self.metadata_df['director'] = self.metadata_df['crew'].apply(self._get_director)
-        
-        # Get lists of names for certain features
-        features = ['cast', 'keywords', 'genres', 'production_companies', 'spoken_languages']
-        for feature in features:
-            self.metadata_df[feature] = self.metadata_df[feature].apply(self._get_list)
-        
-        # Drop crew column as we've extracted directors
-        self.metadata_df = self.metadata_df.drop(columns='crew')
-        
-        # Create rating column for weighting
-        self.metadata_df['rating'] = (self.metadata_df['vote_average'] * self.metadata_df['popularity']) / self.metadata_df['popularity'].mean()
-        
-        # Create rating class
-        self.metadata_df['rating_class'] = pd.qcut(self.metadata_df['rating'], q=[0, 0.3, 0.6, 1.0], labels=['low', 'medium', 'high'])
+        try:
+            # Parse string data to lists with error handling
+            features = ['cast', 'keywords', 'genres', 'production_companies', 'spoken_languages']
+            
+            # Handle crew separately since it's optional
+            if 'crew' in self.metadata_df.columns:
+                self.metadata_df['crew'] = self.metadata_df['crew'].apply(
+                    lambda x: literal_eval(x) if isinstance(x, str) and pd.notna(x) else []
+                )
+                # Extract director from crew
+                self.metadata_df['director'] = self.metadata_df['crew'].apply(self._get_director)
+                # Drop crew column as we've extracted directors
+                self.metadata_df = self.metadata_df.drop(columns='crew')
+            else:
+                # If no crew data, set default director
+                self.metadata_df['director'] = 'Unknown Director'
+            
+            # Process other features
+            for feature in features:
+                if feature in self.metadata_df.columns:
+                    self.metadata_df[feature] = self.metadata_df[feature].apply(
+                        lambda x: literal_eval(x) if isinstance(x, str) and pd.notna(x) else []
+                    )
+                else:
+                    print(f"Warning: {feature} column not found. Setting empty lists.")
+                    self.metadata_df[feature] = [[]] * len(self.metadata_df)
+            
+            # Get lists of names for certain features
+            for feature in features:
+                self.metadata_df[feature] = self.metadata_df[feature].apply(self._get_list)
+            
+            # Handle rating calculation with missing columns
+            if 'vote_average' not in self.metadata_df.columns:
+                print("Warning: vote_average column not found. Setting default values.")
+                self.metadata_df['vote_average'] = 0.0
+            
+            if 'popularity' not in self.metadata_df.columns:
+                print("Warning: popularity column not found. Setting default values.")
+                self.metadata_df['popularity'] = 1.0  # neutral popularity
+            
+            # Create rating column for weighting with safe defaults
+            vote_average = self.metadata_df['vote_average'].fillna(0)
+            popularity = self.metadata_df['popularity'].fillna(1)  # use 1 as neutral popularity
+            mean_popularity = popularity.mean() if len(popularity) > 0 else 1
+            
+            # Avoid division by zero
+            self.metadata_df['rating'] = (vote_average * popularity) / (mean_popularity if mean_popularity != 0 else 1)
+            
+            # Create rating class with safe handling
+            try:
+                self.metadata_df['rating_class'] = pd.qcut(
+                    self.metadata_df['rating'].fillna(0), 
+                    q=[0, 0.3, 0.6, 1.0], 
+                    labels=['low', 'medium', 'high']
+                )
+            except ValueError as e:
+                print("Warning: Could not create rating classes. Setting default class.")
+                self.metadata_df['rating_class'] = 'medium'  # default rating class
+            
+        except Exception as e:
+            print(f"Error processing data: {str(e)}")
+            raise
     
     def _get_director(self, crew: List[Dict[str, Any]]) -> Union[str, float]:
         """
         Extract director name from crew list.
+        Returns 'Unknown Director' if no crew data or no director found.
         """
-        if not isinstance(crew, list):
-            return np.nan
+        if not isinstance(crew, list) or not crew:
+            return 'Unknown Director'
             
         for person in crew:
-            if person.get('job') == 'Director':
-                return person.get('name', np.nan)
-        return np.nan
+            if isinstance(person, dict) and person.get('job') == 'Director':
+                return person.get('name', 'Unknown Director')
+        return 'Unknown Director'
     
     def _get_list(self, items: List[Dict[str, Any]]) -> List[str]:
         """
@@ -115,8 +194,25 @@ class ContentBasedRecommender:
         """
         Create movie profiles by combining features.
         """
-        self.metadata_df['movie_profile'] = self.metadata_df.apply(self._create_movie_profile, axis=1)
-        self.metadata_df['movie_profile'] = self.metadata_df['movie_profile'].apply(self._clean_text)
+        try:
+            self.metadata_df['movie_profile'] = self.metadata_df.apply(self._create_movie_profile, axis=1)
+            
+            # Clean text with error handling
+            cleaned_profiles = []
+            for text in self.metadata_df['movie_profile']:
+                try:
+                    cleaned_text = self._clean_text(text)
+                    cleaned_profiles.append(cleaned_text)
+                except Exception as e:
+                    print(f"Warning: Error cleaning text: {str(e)}")
+                    cleaned_profiles.append("")
+                
+            self.metadata_df['movie_profile'] = cleaned_profiles
+            
+        except Exception as e:
+            print(f"Error creating profiles: {str(e)}")
+            # Set empty profiles as fallback
+            self.metadata_df['movie_profile'] = [""] * len(self.metadata_df)
     
     def _create_movie_profile(self, row: pd.Series) -> str:
         """
@@ -135,27 +231,37 @@ class ContentBasedRecommender:
     def _clean_text(self, text: str) -> str:
         """
         Clean and preprocess text for TF-IDF vectorization.
+        Falls back to basic cleaning if spaCy is not available.
         """
         if not isinstance(text, str):
             return ""
-            
+        
         # Lowercase
         text = text.lower()
         
         # Remove special characters & punctuation
         text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
         
-        # Apply spaCy pipeline
-        doc = self.nlp(text)
+        if self.nlp is not None:
+            try:
+                # Apply spaCy pipeline
+                doc = self.nlp(text)
+                
+                # Lemmatize + remove stopwords + remove spaces
+                tokens = [
+                    token.lemma_
+                    for token in doc
+                    if token.lemma_ not in ENGLISH_STOP_WORDS and not token.is_space
+                ]
+                return ' '.join(tokens)
+            except Exception as e:
+                print(f"Warning: SpaCy processing failed: {str(e)}. Using basic cleaning.")
         
-        # Lemmatize + remove stopwords + remove spaces
-        tokens = [
-            token.lemma_
-            for token in doc
-            if token.lemma_ not in ENGLISH_STOP_WORDS and not token.is_space
-        ]
-        
-        return ' '.join(tokens)
+        # Fallback: basic cleaning without spaCy
+        words = text.split()
+        # Remove common English stop words
+        words = [w for w in words if w.lower() not in ENGLISH_STOP_WORDS]
+        return ' '.join(words)
     
     def build_model(self) -> None:
         """

@@ -36,6 +36,62 @@ def get_recommendation_system():
         
     return recommendation_system
 
+@router.get("/")
+async def get_all_movies(
+    page: int = 1,
+    page_size: int = 20,
+    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+):
+    """
+    Get all movies with pagination.
+    
+    Args:
+        page: Page number (starting from 1)
+        page_size: Number of items per page
+        
+    Returns:
+        Dictionary containing:
+        - items: List of movies for the current page
+        - total: Total number of movies
+        - page: Current page number
+        - total_pages: Total number of pages
+    """
+    # Calculate start and end indices
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    
+    # Get total number of movies
+    total_movies = len(rec_sys.movies_df)
+    total_pages = (total_movies + page_size - 1) // page_size
+    
+    # Get movies for current page
+    movies = rec_sys.movies_df.iloc[start_idx:end_idx]
+    
+    # Convert movies to list of dictionaries with all necessary information
+    movie_list = []
+    for _, movie in movies.iterrows():
+        movie_data = rec_sys.get_movie_by_tmdb_id(movie['tmdb_id'])
+        if movie_data:
+            movie_list.append({
+                "id": movie_data.get('id', 0),
+                "tmdb_id": movie_data.get('tmdb_id', 0),
+                "imdb_id": movie_data.get('imdb_id', ''),
+                "title": movie_data.get('title', ''),
+                "release_date": movie_data.get('release_date', ''),
+                "genres": movie_data.get('genres', []),
+                "director": movie_data.get('director', ''),
+                "cast": movie_data.get('cast', []),
+                "overview": movie_data.get('overview', ''),
+                "vote_average": float(movie_data.get('vote_average', 0.0))
+            })
+    
+    return {
+        "items": movie_list,
+        "total": total_movies,
+        "page": page,
+        "total_pages": total_pages
+    }
+
 @router.get("/tmdb/{tmdb_id}")
 async def get_movie_by_tmdb_id(
     tmdb_id: int,
@@ -108,7 +164,48 @@ async def get_recommendations(
             user_id=user_id,
             top_n=top_n
         )
-        return recommendations
+        
+        # Convert recommendations to native Python types
+        if isinstance(recommendations, list):
+            converted_recs = []
+            for rec in recommendations:
+                if isinstance(rec, dict):
+                    converted_rec = {
+                        "id": int(rec.get('movie_data', {}).get('id', 0)),
+                        "title": str(rec.get('movie_data', {}).get('title', '')),
+                        "vote_average": float(rec.get('movie_data', {}).get('vote_average', 0.0)),
+                        "genres": [str(g) for g in rec.get('movie_data', {}).get('genres', [])],
+                        "tmdb_id": int(rec.get('movie_data', {}).get('tmdb_id', 0)),
+                        "imdb_id": str(rec.get('movie_data', {}).get('imdb_id', '')),
+                        "release_date": str(rec.get('movie_data', {}).get('release_date', '')),
+                        "director": str(rec.get('movie_data', {}).get('director', '')),
+                        "cast": [str(c) for c in rec.get('movie_data', {}).get('cast', [])],
+                        "overview": str(rec.get('movie_data', {}).get('overview', ''))
+                    }
+                    # Add similarity score if present
+                    if 'similarity' in rec:
+                        converted_rec["similarity_score"] = float(rec['similarity'])
+                    converted_recs.append(converted_rec)
+                else:
+                    # If rec is not a dict, it might be just an ID
+                    movie = rec_sys.get_movie_by_id(int(rec))
+                    print(movie)
+                    if movie:
+                        converted_recs.append({
+                            "id": int(movie.get('id', 0)),
+                            "tmdb_id": int(movie.get('tmdb_id', 0)),
+                            "imdb_id": str(movie.get('imdb_id', '')),
+                            "title": str(movie.get('title', '')),
+                            "release_date": str(movie.get('release_date', '')),
+                            "genres": [str(g) for g in movie.get('genres', [])],
+                            "director": str(movie.get('director', '')),
+                            "cast": [str(c) for c in movie.get('cast', [])],
+                            "overview": str(movie.get('overview', '')),
+                            "vote_average": float(movie.get('vote_average', 0.0))
+                        })
+            return converted_recs
+        return []
+        
     except Exception as e:
         logger.error(f"Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -134,8 +231,30 @@ async def get_recommendations_by_tmdb_id(
         
         if not recommendations:
             raise HTTPException(status_code=404, detail=f"Movie with TMDb ID {tmdb_id} not found or no recommendations available")
+        
+        # Convert recommendations to native Python types
+        converted_recs = []
+        for rec in recommendations:
+            if isinstance(rec, dict):
+                converted_rec = {
+                    "id": int(rec.get('id', 0)),
+                    "tmdb_id": int(rec.get('tmdb_id', 0)),
+                    "imdb_id": str(rec.get('imdb_id', '')),
+                    "title": str(rec.get('title', '')),
+                    "release_date": str(rec.get('release_date', '')),
+                    "genres": [str(g) for g in rec.get('genres', [])],
+                    "director": str(rec.get('director', '')),
+                    "cast": [str(c) for c in rec.get('cast', [])],
+                    "overview": str(rec.get('overview', '')),
+                    "vote_average": float(rec.get('vote_average', 0.0))
+                }
+                # Add similarity score if present
+                if 'similarity' in rec:
+                    converted_rec["similarity_score"] = float(rec['similarity'])
+                converted_recs.append(converted_rec)
             
-        return recommendations
+        return converted_recs
+            
     except Exception as e:
         logger.error(f"Error getting recommendations by TMDb ID: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
