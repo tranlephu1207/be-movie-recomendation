@@ -453,12 +453,6 @@ async def get_user_rated_movies_endpoint(
 ):
     """
     Get all movies rated by a specific user with full movie details.
-    
-    Args:
-        user_id: User ID
-        
-    Returns:
-        List of movies with their details and user ratings
     """
     try:
         rated_movies = rec_sys.get_user_rated_movies(user_id)
@@ -469,9 +463,26 @@ async def get_user_rated_movies_endpoint(
         # Convert to list of dictionaries with consistent types
         converted_movies = []
         for movie in rated_movies:
+            # Safe conversion functions
+            def safe_int(value, default=0):
+                try:
+                    if pd.isna(value):  # Check for NaN
+                        return default
+                    return int(value)
+                except (ValueError, TypeError):
+                    return default
+                    
+            def safe_float(value, default=0.0):
+                try:
+                    if pd.isna(value):  # Check for NaN
+                        return default
+                    return float(value)
+                except (ValueError, TypeError):
+                    return default
+
             converted_movie = {
-                "id": int(movie.get('id', 0)),
-                "tmdb_id": int(movie.get('tmdb_id', 0)),
+                "id": safe_int(movie.get('id', 0)),
+                "tmdb_id": safe_int(movie.get('tmdb_id', 0)),
                 "imdb_id": str(movie.get('imdb_id', '')),
                 "title": str(movie.get('title', '')),
                 "release_date": str(movie.get('release_date', '')),
@@ -479,9 +490,9 @@ async def get_user_rated_movies_endpoint(
                 "director": str(movie.get('director', '')),
                 "cast": [str(c) for c in movie.get('cast', [])],
                 "overview": str(movie.get('overview', '')),
-                "vote_average": float(movie.get('vote_average', 0.0)),
-                "user_rating": float(movie.get('user_rating', 0.0)),
-                "rating_timestamp": int(movie.get('rating_timestamp', 0))
+                "vote_average": safe_float(movie.get('vote_average', 0.0)),
+                "user_rating": safe_float(movie.get('user_rating', 0.0)),
+                "rating_timestamp": safe_int(movie.get('rating_timestamp', 0))
             }
             converted_movies.append(converted_movie)
             
