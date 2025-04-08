@@ -4,6 +4,7 @@ import os
 import logging
 from auth_api import router as auth_router
 import pandas as pd
+from fastapi.middleware.cors import CORSMiddleware
 
 # Import TMDb recommendation system
 from tmdb_integration import TMDbRecommendationSystem
@@ -938,6 +939,19 @@ async def get_user_rated_movies_endpoint(
 
 # Create FastAPI instance
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+      "http://localhost:3000",
+      "https://localhost:3000",
+      "https://movie-mood-app68.vercel.app",
+      "https://be-movie-recomendation.onrender.com"  # Add your backend URL
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Include routers
 app.include_router(auth_router)
