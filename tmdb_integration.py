@@ -442,6 +442,59 @@ class TMDbRecommendationSystem:
         
         return rated_movies
 
+    def search_movies(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search for movies by title, genre, director, or actor.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of matching movies with their details
+        """
+        query = query.lower()
+        
+        # Search in metadata_df
+        matches = []
+        
+        for _, movie in self.metadata_df.iterrows():
+            score = 0
+            
+            # Check title (highest weight)
+            if query in movie['title'].lower():
+                score += 10
+                
+            # Check genres
+            if isinstance(movie['genres'], list):
+                for genre in movie['genres']:
+                    if query in genre.lower():
+                        score += 5
+                        
+            # Check director
+            if query in movie['director'].lower():
+                score += 5
+                
+            # Check cast
+            if isinstance(movie['cast'], list):
+                for actor in movie['cast']:
+                    if query in actor.lower():
+                        score += 3
+                        
+            # Check overview
+            if query in movie['overview'].lower():
+                score += 2
+                
+            if score > 0:
+                movie_data = self.get_movie_by_id(movie['id'])
+                if movie_data:
+                    movie_data['search_score'] = score
+                    matches.append(movie_data)
+        
+        # Sort by search score and limit results
+        matches.sort(key=lambda x: x['search_score'], reverse=True)
+        return matches[:limit]
+
 # Example usage
 if __name__ == "__main__":
     # Initialize recommendation system
