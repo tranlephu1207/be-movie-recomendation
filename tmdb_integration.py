@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional, Union
 from models.content_based import ContentBasedRecommender
 from models.collaborative import CollaborativeRecommender
 from models.hybrid import HybridRecommender
+import time
 
 class TMDbRecommendationSystem:
     """
@@ -375,11 +376,17 @@ class TMDbRecommendationSystem:
         Save user ratings to CSV file.
         
         Args:
-            file_path: Path to save ratings (default: data_dir/user_ratings.csv)
+            file_path: Path to save ratings (default: RATINGS_PATH from .env)
         """
         if file_path is None:
-            file_path = os.path.join(self.data_dir, 'user_ratings.csv')
+            file_path = os.getenv('RATINGS_PATH', os.path.join(self.data_dir, 'ratings_small.csv'))
             
+        # Add timestamp column if it doesn't exist
+        if 'timestamp' not in self.user_ratings_df.columns:
+            self.user_ratings_df['timestamp'] = int(time.time())
+            
+        # Ensure columns are in the correct order
+        self.user_ratings_df = self.user_ratings_df[['userId', 'movieId', 'rating', 'timestamp']]
         self.user_ratings_df.to_csv(file_path, index=False)
     
     def load_user_ratings(self, file_path: Optional[str] = None) -> None:
@@ -387,17 +394,53 @@ class TMDbRecommendationSystem:
         Load user ratings from CSV file.
         
         Args:
-            file_path: Path to load ratings from (default: data_dir/user_ratings.csv)
+            file_path: Path to load ratings from (default: RATINGS_PATH from .env)
         """
         if file_path is None:
-            file_path = os.path.join(self.data_dir, 'user_ratings.csv')
+            file_path = os.getenv('RATINGS_PATH', os.path.join(self.data_dir, 'ratings_small.csv'))
             
         if os.path.exists(file_path):
             self.user_ratings_df = pd.read_csv(file_path)
             
+            # Ensure required columns exist
+            required_columns = ['userId', 'movieId', 'rating', 'timestamp']
+            if not all(col in self.user_ratings_df.columns for col in required_columns):
+                raise ValueError(f"Ratings file must contain columns: {required_columns}")
+            
             # Rebuild collaborative model
             self.collaborative_recommender.ratings_df = self.user_ratings_df
             self.collaborative_recommender.build_model()
+
+    def get_user_rated_movies(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        Get all movies rated by a specific user.
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            List of dictionaries containing movie details and user ratings
+        """
+        # Get all ratings for this user
+        user_ratings = self.user_ratings_df[self.user_ratings_df['userId'] == user_id]
+        
+        if len(user_ratings) == 0:
+            return []
+        
+        # Get movie details for each rated movie
+        rated_movies = []
+        for _, row in user_ratings.iterrows():
+            movie_info = self.get_movie_by_id(row['movieId'])
+            if movie_info is not None:
+                # Add user's rating to movie info
+                movie_info['user_rating'] = row['rating']
+                movie_info['rating_timestamp'] = row['timestamp']
+                rated_movies.append(movie_info)
+        
+        # Sort by rating timestamp (most recent first)
+        rated_movies.sort(key=lambda x: x['rating_timestamp'], reverse=True)
+        
+        return rated_movies
 
 # Example usage
 if __name__ == "__main__":
