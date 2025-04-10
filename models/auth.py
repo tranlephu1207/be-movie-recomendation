@@ -87,7 +87,14 @@ class AuthManager:
             return None
         
         # Generate user ID
-        user_id = len(self.users_df) + 1
+        if len(self.users_df) == 0:
+            user_id = 164984  # Start with this ID if no users exist
+        else:
+            last_user_id = self.users_df["id"].max()
+            if last_user_id < 164983:
+                user_id = 164984  # Set to 164984 if last ID is smaller than 164983
+            else:
+                user_id = last_user_id + 1  # Otherwise increment the last ID
         
         # Hash password
         password_hash = pwd_context.hash(password)

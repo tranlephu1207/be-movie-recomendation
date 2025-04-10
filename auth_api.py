@@ -43,6 +43,7 @@ async def signup(user_data: UserSignUp):
         email=user_data.email,
         password=user_data.password
     )
+    print(user)
     
     if user is None:
         raise HTTPException(

@@ -330,7 +330,8 @@ class TMDbRecommendationSystem:
         new_rating = pd.DataFrame({
             'userId': [user_id],
             'movieId': [movie_id],
-            'rating': [rating]
+            'rating': [rating],
+            'timestamp': [time.time()]
         })
         
         # Remove existing rating if present
@@ -423,14 +424,14 @@ class TMDbRecommendationSystem:
         """
         # Get all ratings for this user
         user_ratings = self.user_ratings_df[self.user_ratings_df['userId'] == user_id]
-        
         if len(user_ratings) == 0:
             return []
         
         # Get movie details for each rated movie
         rated_movies = []
         for _, row in user_ratings.iterrows():
-            movie_info = self.get_movie_by_id(row['movieId'])
+            movieId = int(row['movieId'])
+            movie_info = self.get_movie_by_id(movieId)
             if movie_info is not None:
                 # Add user's rating to movie info
                 movie_info['user_rating'] = row['rating']
