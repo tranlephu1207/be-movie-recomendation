@@ -1,6 +1,9 @@
 from kfp import dsl, compiler
 from kfp.dsl import component, Input, Dataset, Output, Model
 from google.cloud import aiplatform
+import os
+from datetime import datetime
+
 
 PROJECT_ID = "hallowed-hold-454809-q7"
 LOCATION = "asia-southeast1"
@@ -8,6 +11,7 @@ BUCKET_URI = "gs://namtua-movie-data"
 PIPELINE_ROOT_PATH = f"{BUCKET_URI}/pipelines"
 PIPELINE_NAME = "movie_pipeline.yaml"
 BUCKET="namtua-movie-data"
+MODEL_TAG=os.environ.get("CI_COMMIT_TAG",os.environ.get("CI_COMMIT_SHA",datetime.now().strftime("%Y-%m-%d-%H%M%S")))
 
 
 @component(
@@ -95,7 +99,7 @@ def movie_pipeline():
     train_task = train_and_upload_model(
         ratings_cleaned=preprocess_task.outputs["ratings_cleaned"],
         bucket=BUCKET,
-        svd_model_upload_path="models/svd_v1.pkl",
+        svd_model_upload_path=f"models/svd_{MODEL_TAG}.pkl",
     )
 
 

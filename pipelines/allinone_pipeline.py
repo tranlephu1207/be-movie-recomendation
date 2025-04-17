@@ -1,13 +1,15 @@
 from kfp import dsl, compiler
 from kfp.dsl import component, Input, Dataset
 from google.cloud import aiplatform
+import os
+from datetime import datetime
 
 PROJECT_ID = "hallowed-hold-454809-q7"
 LOCATION = "asia-southeast1"
 BUCKET_URI = "gs://namtua-movie-data"
 PIPELINE_ROOT_PATH = f"{BUCKET_URI}/pipelines"
 PIPELINE_NAME = "movie_pipeline.yaml"
-
+MODEL_TAG=os.environ.get("CI_COMMIT_TAG",os.environ.get("CI_COMMIT_SHA",datetime.now().strftime("%Y-%m-%d-%H%M%S")))
 
 @component(
     base_image="python:3.10",
@@ -72,10 +74,10 @@ def svd_train_and_push_model(
     pipeline_root=PIPELINE_ROOT_PATH,
 )
 def movie_pipeline():
-    svd_train_and_push_model = svd_train_and_push_model(
+    svd_train_and_push_model_task = svd_train_and_push_model(
         bucket="namtua-movie-data",
         ratings_small_path="data/recommendation_data/ratings_small.csv",
-        svd_model_upload_path="models/svd_v1.pkl",
+        svd_model_upload_path=f"models/svd_{MODEL_TAG}.pkl",
     )
 
 
