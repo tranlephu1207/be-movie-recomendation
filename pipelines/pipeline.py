@@ -10,8 +10,11 @@ LOCATION = "asia-southeast1"
 BUCKET_URI = "gs://namtua-movie-data"
 PIPELINE_ROOT_PATH = f"{BUCKET_URI}/pipelines"
 PIPELINE_NAME = "movie_pipeline.yaml"
-BUCKET="namtua-movie-data"
-MODEL_TAG=os.environ.get("CI_COMMIT_TAG",os.environ.get("CI_COMMIT_SHA",datetime.now().strftime("%Y-%m-%d-%H%M%S")))
+BUCKET = "namtua-movie-data"
+MODEL_TAG = os.environ.get(
+    "CI_COMMIT_TAG",
+    os.environ.get("CI_COMMIT_SHA", datetime.now().strftime("%Y-%m-%d-%H%M%S")),
+)
 
 
 @component(
@@ -43,7 +46,7 @@ def preprocess_data(
     )
 
     df = pd.concat([df, new_user_ratings], ignore_index=True)
-    df.to_csv(os.path.join(ratings_cleaned.path, "ratings_cleaned.csv"), index=False)
+    df.to_csv(ratings_cleaned.path + ".csv", index=False)
 
 
 @component(
@@ -65,7 +68,7 @@ def train_and_upload_model(
     import os
     from google.cloud import storage
 
-    df = pd.read_csv(os.path.join(ratings_cleaned.path, "ratings_cleaned.csv"))
+    df = pd.read_csv(ratings_cleaned.path + ".csv")
 
     reader = Reader(rating_scale=(0.5, 5.0))
     data = Dataset.load_from_df(df[["userId", "movieId", "rating"]], reader)
