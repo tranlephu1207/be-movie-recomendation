@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional, Union
 from models.content_based import ContentBasedRecommender
 from models.collaborative import CollaborativeRecommender
 from models.hybrid import HybridRecommender
+from utils.gcloud import init_credentials
 import time
 
 class TMDbRecommendationSystem:
@@ -26,6 +27,14 @@ class TMDbRecommendationSystem:
         self.crew_file = os.path.join(data_dir, 'crew.csv')
         self.mapping_file = os.path.join(data_dir, 'id_mapping.csv')
         
+        # Initialize Google Cloud credentials if needed
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if credentials_path:
+            try:
+                init_credentials(credentials_path)
+            except Exception as e:
+                print(f"Warning: Failed to initialize Google Cloud credentials: {e}")
+                
         # Check if necessary files exist
         self._check_files()
         

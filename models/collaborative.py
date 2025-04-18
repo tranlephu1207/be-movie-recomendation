@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 from surprise import Dataset, Reader, SVD
 from typing import List, Tuple, Optional, Dict, Any
+from utils.gcloud import download_blob
 
 class CollaborativeRecommender:
     """
@@ -17,10 +18,12 @@ class CollaborativeRecommender:
         Args:
             ratings_path: Path to ratings CSV file (optional)
         """
-        self.model = SVD()
+        self.model = None
         self.ratings_df = None
         self.reader = Reader(rating_scale=(0.5, 5.0))
         
+        svd_gcs_url = os.getenv("SVD_GCS_URL")
+        self.load_model_from_gcs(svd_gcs_url)
         if ratings_path:
             self.load_data(ratings_path)
             self.build_model()
@@ -171,4 +174,46 @@ class CollaborativeRecommender:
         else:
             instance.ratings_df = None
             
+        return instance
+
+    @classmethod
+    def load_model_from_gcs(
+        cls, gcs_url: str, local_model_dir: str = "models/saved"
+    ) -> "CollaborativeRecommender":
+        """
+        Download and load a model from Google Cloud Storage.
+
+        Args:
+            gcs_url: GCS URL in format 'gs://bucket-name/path/to/model.pkl'
+            local_model_dir: Local directory to save downloaded model
+
+        Returns:
+            Loaded recommender instance
+
+        Example:
+            recommender = CollaborativeRecommender.load_model_from_gcs(
+                'gs://my-bucket/models/svd_model.pkl'
+            )
+        """
+        print("downloading model from gcs")
+        # Parse GCS URL
+        if not gcs_url.startswith("gs://"):
+            raise ValueError("GCS URL must start with 'gs://'")
+
+        bucket_name = gcs_url.split("/")[2]
+        blob_path = "/".join(gcs_url.split("/")[3:])
+
+        # Create local model directory
+        os.makedirs(local_model_dir, exist_ok=True)
+        local_model_path = os.path.join(local_model_dir, os.path.basename(blob_path))
+
+        # Download model from GCS
+        download_blob(bucket_name, blob_path, local_model_path)
+
+        # Create instance and load model
+        instance = cls.__new__(cls)
+        instance.model = joblib.load(local_model_path)
+        instance.reader = Reader(rating_scale=(0.5, 5.0))
+        instance.ratings_df = None
+
         return instance
