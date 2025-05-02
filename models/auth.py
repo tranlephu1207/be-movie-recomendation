@@ -7,68 +7,114 @@ import datetime
 from typing import Optional, List, Dict, Any, Union
 import pandas as pd
 from passlib.context import CryptContext
+from utils.gcloud import init_credentials, get_storage_client, download_blob, upload_blob
+import io
 
 # Password handling
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class AuthManager:
     """
-    Handle user authentication, registration, and token management.
+    Handle user authentication, registration, and token management using Google Cloud Storage.
     """
     
-    def __init__(self, data_dir: str = "./data"):
+    def __init__(self, bucket_name: str = None, data_folder: str = "data"):
         """
         Initialize authentication manager.
         
         Args:
-            data_dir: Directory for storing user data
+            bucket_name: Name of the Google Cloud Storage bucket
+            data_folder: Folder within the bucket to store auth data
         """
-        self.data_dir = data_dir
-        self.users_file = os.path.join(data_dir, "users.csv")
-        self.tokens_file = os.path.join(data_dir, "tokens.csv")
+        # Get bucket name from env var if not provided
+        self.bucket_name = bucket_name or os.environ.get("GCS_BUCKET_NAME")
+        if not self.bucket_name:
+            raise ValueError("Bucket name must be provided or GCS_BUCKET_NAME environment variable must be set")
+            
+        self.data_folder = data_folder
         
-        # Create directory if it doesn't exist
-        os.makedirs(data_dir, exist_ok=True)
+        # Initialize GCS client
+        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable must be set")
+            
+        try:
+            init_credentials(credentials_path)
+            self.storage_client = get_storage_client()
+            self.bucket = self.storage_client.bucket(self.bucket_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Google Cloud Storage: {e}")
+        
+        # Define file paths in the bucket
+        self.users_file = f"{data_folder}/users.csv"
+        self.tokens_file = f"{data_folder}/tokens.csv"
         
         # Initialize files if they don't exist
         self._initialize_files()
         
         # Load user data
-        self.users_df = pd.read_csv(self.users_file) if os.path.exists(self.users_file) else pd.DataFrame(
-            columns=["id", "name", "email", "password_hash", "created_at"]
-        )
+        self.users_df = self._read_csv_from_bucket(self.users_file)
         
         # Load token data
-        self.tokens_df = pd.read_csv(self.tokens_file) if os.path.exists(self.tokens_file) else pd.DataFrame(
-            columns=["user_id", "access_token", "refresh_token", "access_expiry", "refresh_expiry"]
-        )
+        self.tokens_df = self._read_csv_from_bucket(self.tokens_file)
+    
+    def _read_csv_from_bucket(self, file_path: str) -> pd.DataFrame:
+        """
+        Read a CSV file from Google Cloud Storage bucket.
+        
+        Args:
+            file_path: Path to CSV file in the bucket
+            
+        Returns:
+            Pandas DataFrame with the CSV data
+        """
+        blob = self.bucket.blob(file_path)
+        if not blob.exists():
+            return pd.DataFrame()
+            
+        # Download as bytes and convert to DataFrame
+        content = blob.download_as_bytes()
+        return pd.read_csv(io.BytesIO(content))
+        
+    def _write_csv_to_bucket(self, df: pd.DataFrame, file_path: str) -> None:
+        """
+        Write a DataFrame as CSV to Google Cloud Storage bucket.
+        
+        Args:
+            df: Pandas DataFrame to write
+            file_path: Path in the bucket where to save the CSV
+        """
+        # Convert DataFrame to CSV string
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        # Upload to bucket
+        blob = self.bucket.blob(file_path)
+        blob.upload_from_string(csv_content, content_type="text/csv")
     
     def _initialize_files(self) -> None:
         """Initialize CSV files with headers if they don't exist."""
         
         # Users file
-        if not os.path.exists(self.users_file):
-            with open(self.users_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "id", "name", "email", "password_hash", "created_at"
-                ])
+        users_blob = self.bucket.blob(self.users_file)
+        if not users_blob.exists():
+            users_df = pd.DataFrame(columns=["id", "name", "email", "password_hash", "created_at"])
+            self._write_csv_to_bucket(users_df, self.users_file)
         
         # Tokens file
-        if not os.path.exists(self.tokens_file):
-            with open(self.tokens_file, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "user_id", "access_token", "refresh_token", "access_expiry", "refresh_expiry"
-                ])
+        tokens_blob = self.bucket.blob(self.tokens_file)
+        if not tokens_blob.exists():
+            tokens_df = pd.DataFrame(columns=["user_id", "access_token", "refresh_token", "access_expiry", "refresh_expiry"])
+            self._write_csv_to_bucket(tokens_df, self.tokens_file)
     
     def _save_users(self) -> None:
-        """Save users dataframe to CSV."""
-        self.users_df.to_csv(self.users_file, index=False)
+        """Save users dataframe to GCS."""
+        self._write_csv_to_bucket(self.users_df, self.users_file)
     
     def _save_tokens(self) -> None:
-        """Save tokens dataframe to CSV."""
-        self.tokens_df.to_csv(self.tokens_file, index=False)
+        """Save tokens dataframe to GCS."""
+        self._write_csv_to_bucket(self.tokens_df, self.tokens_file)
     
     def register_user(self, name: str, email: str, password: str) -> Optional[Dict[str, Any]]:
         """

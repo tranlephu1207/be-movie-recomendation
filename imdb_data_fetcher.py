@@ -5,6 +5,8 @@ import time
 import requests
 import pandas as pd
 from typing import Dict, List, Any, Optional, Union
+from utils.gcloud import init_credentials, get_storage_client
+import io
 
 class IMDbDataFetcher:
     """

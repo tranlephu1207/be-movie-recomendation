@@ -8,13 +8,14 @@ import spacy
 from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List, Dict, Any, Union, Optional
+from utils.gcloud import init_credentials, get_storage_client, download_blob, upload_blob
 
 class ContentBasedRecommender:
     """
     Content-based recommendation system using TF-IDF and cosine similarity.
     """
     
-    def __init__(self, metadata_path: str, links_path: str, credits_path: str, keywords_path: str):
+    def __init__(self, metadata_path: str, links_path: str, credits_path: str, keywords_path: str, bucket_name: str = None):
         """
         Initialize the content-based recommender.
         
@@ -23,6 +24,7 @@ class ContentBasedRecommender:
             links_path: Path to links CSV
             credits_path: Path to credits CSV
             keywords_path: Path to keywords CSV
+            bucket_name: Name of the Google Cloud Storage bucket
         """
         try:
             # Initialize spaCy with fallback
@@ -42,6 +44,22 @@ class ContentBasedRecommender:
             self.metadata_df = None
             self.tfidf_matrix = None
             self.vectorizer = None
+            self.bucket_name = bucket_name or os.environ.get("GCS_BUCKET_NAME")
+            if not self.bucket_name:
+                raise ValueError("Bucket name must be provided or GCS_BUCKET_NAME environment variable must be set")
+            
+            # Initialize GCS client
+            credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if not credentials_path:
+                raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable must be set")
+            
+            try:
+                init_credentials(credentials_path)
+                self.storage_client = get_storage_client()
+                self.bucket = self.storage_client.bucket(self.bucket_name)
+            except Exception as e:
+                raise RuntimeError(f"Failed to initialize Google Cloud Storage: {e}")
+            
             self.load_data(metadata_path, links_path, credits_path, keywords_path)
             self.process_data()
             self.create_profiles()
@@ -330,30 +348,82 @@ class ContentBasedRecommender:
     
     def save_model(self, path: str) -> None:
         """
-        Save the recommender model to disk.
+        Save the recommender model to Google Cloud Storage.
         
         Args:
-            path: Directory path to save model
+            path: Path in the bucket where to save the model
         """
-        os.makedirs(path, exist_ok=True)
-        joblib.dump(self.vectorizer, os.path.join(path, 'vectorizer.pkl'))
-        joblib.dump(self.tfidf_matrix, os.path.join(path, 'tfidf_matrix.pkl'))
-        self.metadata_df.to_pickle(os.path.join(path, 'metadata_df.pkl'))
+        try:
+            # Create temporary directory for model files
+            import tempfile
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save model components to temporary files
+                vectorizer_path = os.path.join(temp_dir, 'vectorizer.pkl')
+                tfidf_path = os.path.join(temp_dir, 'tfidf_matrix.pkl')
+                metadata_path = os.path.join(temp_dir, 'metadata_df.pkl')
+                
+                joblib.dump(self.vectorizer, vectorizer_path)
+                joblib.dump(self.tfidf_matrix, tfidf_path)
+                self.metadata_df.to_pickle(metadata_path)
+                
+                # Upload files to GCS
+                upload_blob(self.bucket_name, vectorizer_path, f"{path}/vectorizer.pkl")
+                upload_blob(self.bucket_name, tfidf_path, f"{path}/tfidf_matrix.pkl")
+                upload_blob(self.bucket_name, metadata_path, f"{path}/metadata_df.pkl")
+                
+        except Exception as e:
+            print(f"Error saving model to GCS: {str(e)}")
+            raise
     
     @classmethod
-    def load_model(cls, path: str) -> 'ContentBasedRecommender':
+    def load_model(cls, path: str, bucket_name: str = None) -> 'ContentBasedRecommender':
         """
-        Load the recommender model from disk.
+        Load the recommender model from Google Cloud Storage.
         
         Args:
-            path: Directory path to load model from
+            path: Path in the bucket where the model is stored
+            bucket_name: Name of the Google Cloud Storage bucket
             
         Returns:
             Loaded recommender instance
         """
-        instance = cls.__new__(cls)
-        instance.vectorizer = joblib.load(os.path.join(path, 'vectorizer.pkl'))
-        instance.tfidf_matrix = joblib.load(os.path.join(path, 'tfidf_matrix.pkl'))
-        instance.metadata_df = pd.read_pickle(os.path.join(path, 'metadata_df.pkl'))
-        instance.nlp = spacy.load("en_core_web_sm")
-        return instance
+        try:
+            # Get bucket name
+            bucket_name = bucket_name or os.environ.get("GCS_BUCKET_NAME")
+            if not bucket_name:
+                raise ValueError("Bucket name must be provided or GCS_BUCKET_NAME environment variable must be set")
+            
+            # Create temporary directory for downloaded files
+            import tempfile
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Download model components
+                vectorizer_path = os.path.join(temp_dir, 'vectorizer.pkl')
+                tfidf_path = os.path.join(temp_dir, 'tfidf_matrix.pkl')
+                metadata_path = os.path.join(temp_dir, 'metadata_df.pkl')
+                
+                download_blob(bucket_name, f"{path}/vectorizer.pkl", vectorizer_path)
+                download_blob(bucket_name, f"{path}/tfidf_matrix.pkl", tfidf_path)
+                download_blob(bucket_name, f"{path}/metadata_df.pkl", metadata_path)
+                
+                # Create instance and load model components
+                instance = cls.__new__(cls)
+                instance.vectorizer = joblib.load(vectorizer_path)
+                instance.tfidf_matrix = joblib.load(tfidf_path)
+                instance.metadata_df = pd.read_pickle(metadata_path)
+                instance.nlp = spacy.load("en_core_web_sm")
+                instance.bucket_name = bucket_name
+                
+                # Initialize GCS client
+                credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+                if not credentials_path:
+                    raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable must be set")
+                
+                init_credentials(credentials_path)
+                instance.storage_client = get_storage_client()
+                instance.bucket = instance.storage_client.bucket(bucket_name)
+                
+                return instance
+                
+        except Exception as e:
+            print(f"Error loading model from GCS: {str(e)}")
+            raise

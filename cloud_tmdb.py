@@ -1,17 +1,22 @@
 import os
 import pandas as pd
 import numpy as np
+import io
 from typing import Dict, List, Any, Optional, Union
 from models.content_based import ContentBasedRecommender
 from models.collaborative import CollaborativeRecommender
 from models.hybrid import HybridRecommender
-from utils.gcloud import init_credentials, get_storage_client, download_blob
+from utils.gcloud import init_credentials, get_storage_client
 import time
-import io
+import logging
 
-class TMDbRecommendationSystem:
+# Set up logging
+logger = logging.getLogger(__name__)
+
+class CloudTMDbRecommendationSystem:
     """
-    Movie recommendation system using TMDb data stored in Google Cloud Storage.
+    Movie recommendation system using TMDb data stored in Google Cloud Storage bucket.
+    This is a drop-in replacement for the local file-based TMDbRecommendationSystem.
     """
     
     def __init__(self, bucket_name: str = None, data_folder: str = 'data'):
@@ -34,7 +39,8 @@ class TMDbRecommendationSystem:
         self.genres_file = f"{data_folder}/genres.csv"
         self.cast_file = f"{data_folder}/cast.csv"
         self.crew_file = f"{data_folder}/crew.csv"
-        self.mapping_file = f"{data_folder}/id_mapping.csv"
+        self.mapping_file = f"{data_folder}/id_mapping.csv" 
+        self.ratings_file = f"{data_folder}/ratings_small.csv"
         
         # Initialize Google Cloud credentials
         credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
@@ -45,13 +51,17 @@ class TMDbRecommendationSystem:
             init_credentials(credentials_path)
             self.storage_client = get_storage_client()
             self.bucket = self.storage_client.bucket(self.bucket_name)
+            logger.info(f"Successfully connected to bucket: {self.bucket_name}")
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize Google Cloud Storage: {e}")
+            error_msg = f"Failed to initialize Google Cloud Storage: {e}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
         
-        # Check if necessary files exist
+        # Check if necessary files exist in bucket
         self._check_files()
         
-        # Load data from GCS
+        # Load data directly from Cloud Storage
+        logger.info("Loading data from Cloud Storage...")
         self.movies_df = self._read_csv_from_bucket(self.movies_file)
         self.genres_df = self._read_csv_from_bucket(self.genres_file)
         self.cast_df = self._read_csv_from_bucket(self.cast_file)
@@ -60,41 +70,56 @@ class TMDbRecommendationSystem:
         # Try to load mapping file, but continue if it doesn't exist
         try:
             self.mapping_df = self._read_csv_from_bucket(self.mapping_file)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Mapping file not found: {e}")
             self.mapping_df = None
+            
+        # Try to load existing ratings
+        try:
+            self.user_ratings_df = self._read_csv_from_bucket(self.ratings_file)
+        except Exception as e:
+            logger.warning(f"Ratings file not found, creating empty ratings dataframe: {e}")
+            # Create empty ratings dataframe if file doesn't exist
+            self.user_ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating', 'timestamp'])
         
         # Prepare data for recommendation system
         self._prepare_data()
         
         # Initialize recommenders
+        logger.info("Initializing recommender models...")
         self.content_recommender = self._initialize_content_recommender()
         self.collaborative_recommender = self._initialize_collaborative_recommender()
         self.hybrid_recommender = HybridRecommender(
             content_recommender=self.content_recommender,
             collab_recommender=self.collaborative_recommender
         )
+        logger.info("Recommendation system initialization complete")
     
     def _read_csv_from_bucket(self, file_path: str) -> pd.DataFrame:
         """
-        Read a CSV file from Google Cloud Storage bucket.
+        Read a CSV file directly from Google Cloud Storage bucket.
         
         Args:
             file_path: Path to CSV file in the bucket
             
         Returns:
             Pandas DataFrame with the CSV data
+            
+        Raises:
+            Exception: If file doesn't exist or can't be read
         """
         blob = self.bucket.blob(file_path)
+        
         if not blob.exists():
             raise FileNotFoundError(f"File not found in bucket: {file_path}")
-            
+        
         # Download as bytes and convert to DataFrame
         content = blob.download_as_bytes()
         return pd.read_csv(io.BytesIO(content))
-        
+    
     def _write_csv_to_bucket(self, df: pd.DataFrame, file_path: str) -> None:
         """
-        Write a DataFrame as CSV to Google Cloud Storage bucket.
+        Write a DataFrame as CSV directly to Google Cloud Storage bucket.
         
         Args:
             df: Pandas DataFrame to write
@@ -108,7 +133,8 @@ class TMDbRecommendationSystem:
         # Upload to bucket
         blob = self.bucket.blob(file_path)
         blob.upload_from_string(csv_content, content_type="text/csv")
-        
+        logger.info(f"Successfully wrote to {file_path} in bucket {self.bucket_name}")
+    
     def _check_files(self) -> None:
         """Check if necessary files exist in the bucket."""
         required_files = [self.movies_file, self.genres_file, self.cast_file, self.crew_file]
@@ -186,9 +212,6 @@ class TMDbRecommendationSystem:
         self.metadata_df['cast'] = self.metadata_df['cast'].apply(lambda x: [] if isinstance(x, float) and np.isnan(x) else x)
         self.metadata_df['overview'] = self.metadata_df['overview'].fillna('')
         self.metadata_df['director'] = self.metadata_df['director'].fillna('')
-        
-        # Create user ratings dataframe for collaborative filtering
-        self.user_ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
     
     def _initialize_content_recommender(self) -> ContentBasedRecommender:
         """Initialize content-based recommender with processed data."""
@@ -317,7 +340,7 @@ class TMDbRecommendationSystem:
                 top_n=top_n
             )
 
-                # Add detailed movie data for each recommendation
+        # Add detailed movie data for each recommendation
         movie_data = []
         for movie_id in recommendations['id']:
             movie_info = self.get_movie_by_id(movie_id)
@@ -377,7 +400,7 @@ class TMDbRecommendationSystem:
             
         tmdb_id = movie.iloc[0]['tmdb_id']
         return self.get_recommendations_by_tmdb_id(tmdb_id, user_id, top_n)
-    
+        
     def add_user_rating(self, user_id: int, movie_id: int, rating: float) -> bool:
         """
         Add a user rating using internal movie ID.
@@ -399,7 +422,7 @@ class TMDbRecommendationSystem:
             'userId': [user_id],
             'movieId': [movie_id],
             'rating': [rating],
-            'timestamp': [time.time()]
+            'timestamp': [int(time.time())]
         })
         
         # Remove existing rating if present
@@ -410,6 +433,9 @@ class TMDbRecommendationSystem:
         
         # Add new rating
         self.user_ratings_df = pd.concat([self.user_ratings_df, new_rating], ignore_index=True)
+        
+        # Write updated ratings to bucket immediately
+        self._write_csv_to_bucket(self.user_ratings_df, self.ratings_file)
         
         # Rebuild collaborative model
         self.collaborative_recommender.ratings_df = self.user_ratings_df
@@ -442,13 +468,13 @@ class TMDbRecommendationSystem:
     
     def save_user_ratings(self, file_path: Optional[str] = None) -> None:
         """
-        Save user ratings to CSV file.
+        Save user ratings to CSV file in the cloud bucket.
         
         Args:
-            file_path: Path to save ratings (default: RATINGS_PATH from .env)
+            file_path: Path to save ratings (default: ratings_file class attribute)
         """
         if file_path is None:
-            file_path = os.getenv('RATINGS_PATH', os.path.join(self.data_folder, 'ratings_small.csv'))
+            file_path = self.ratings_file
             
         # Add timestamp column if it doesn't exist
         if 'timestamp' not in self.user_ratings_df.columns:
@@ -456,20 +482,23 @@ class TMDbRecommendationSystem:
             
         # Ensure columns are in the correct order
         self.user_ratings_df = self.user_ratings_df[['userId', 'movieId', 'rating', 'timestamp']]
-        self.user_ratings_df.to_csv(file_path, index=False)
+        
+        # Write to cloud
+        self._write_csv_to_bucket(self.user_ratings_df, file_path)
+        logger.info(f"User ratings saved to {file_path}")
     
     def load_user_ratings(self, file_path: Optional[str] = None) -> None:
         """
-        Load user ratings from CSV file.
+        Load user ratings from CSV file in the cloud bucket.
         
         Args:
-            file_path: Path to load ratings from (default: RATINGS_PATH from .env)
+            file_path: Path to load ratings from (default: ratings_file class attribute)
         """
         if file_path is None:
-            file_path = os.getenv('RATINGS_PATH', os.path.join(self.data_folder, 'ratings_small.csv'))
+            file_path = self.ratings_file
             
-        if os.path.exists(file_path):
-            self.user_ratings_df = pd.read_csv(file_path)
+        try:
+            self.user_ratings_df = self._read_csv_from_bucket(file_path)
             
             # Ensure required columns exist
             required_columns = ['userId', 'movieId', 'rating', 'timestamp']
@@ -479,6 +508,12 @@ class TMDbRecommendationSystem:
             # Rebuild collaborative model
             self.collaborative_recommender.ratings_df = self.user_ratings_df
             self.collaborative_recommender.build_model()
+            logger.info(f"User ratings loaded from {file_path}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to load ratings from {file_path}: {e}")
+            # Create empty ratings dataframe
+            self.user_ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating', 'timestamp'])
 
     def get_user_rated_movies(self, user_id: int) -> List[Dict[str, Any]]:
         """
@@ -564,32 +599,77 @@ class TMDbRecommendationSystem:
         matches.sort(key=lambda x: x['search_score'], reverse=True)
         return matches[:limit]
 
-# Example usage
-if __name__ == "__main__":
-    # Initialize recommendation system
-    rec_sys = TMDbRecommendationSystem()
-    
-    # Get movie details
-    movie = rec_sys.get_movie_by_tmdb_id(862)  # Toy Story
-    print(f"Movie: {movie['title']} ({movie['release_date'][:4]})")
-    print(f"Genres: {', '.join(movie['genres'])}")
-    print(f"Rating: {movie['vote_average']}")
-    print(f"Overview: {movie['overview'][:100]}...")
-    
-    # Get recommendations based on a movie
-    recommendations = rec_sys.get_recommendations_by_tmdb_id(862, top_n=5)
-    print("\nRecommendations:")
-    for i, rec in enumerate(recommendations, 1):
-        print(f"{i}. {rec['title']} - {rec['vote_average']}")
-    
-    # Add a user rating
-    rec_sys.add_user_rating_by_tmdb_id(user_id=1, tmdb_id=862, rating=5.0)
-    
-    # Get personalized recommendations
-    personalized_recs = rec_sys.get_recommendations_by_tmdb_id(862, user_id=1, top_n=5)
-    print("\nPersonalized recommendations:")
-    for i, rec in enumerate(personalized_recs, 1):
-        print(f"{i}. {rec['title']} - {rec['vote_average']}")
-    
-    # Save user ratings
-    rec_sys.save_user_ratings()
+    def update_movie_data(self, updated_movie: Dict[str, Any]) -> bool:
+        """
+        Update movie data in the bucket.
+        
+        Args:
+            updated_movie: Dictionary with movie data (must include tmdb_id)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if 'tmdb_id' not in updated_movie:
+            return False
+            
+        tmdb_id = updated_movie['tmdb_id']
+        
+        # Update movies dataframe
+        movie_idx = self.movies_df[self.movies_df['tmdb_id'] == tmdb_id].index
+        if len(movie_idx) == 0:
+            return False
+            
+        # Update relevant fields in movies dataframe
+        for field in ['title', 'overview', 'vote_average', 'release_date']:
+            if field in updated_movie:
+                self.movies_df.loc[movie_idx, field] = updated_movie[field]
+        
+        # Update genres if provided
+        if 'genres' in updated_movie:
+            # Remove existing genres
+            self.genres_df = self.genres_df[self.genres_df['tmdb_id'] != tmdb_id]
+            
+            # Add new genres
+            new_genres = []
+            for genre in updated_movie['genres']:
+                new_genres.append({'tmdb_id': tmdb_id, 'genre_name': genre})
+                
+            if new_genres:
+                self.genres_df = pd.concat([self.genres_df, pd.DataFrame(new_genres)], ignore_index=True)
+        
+        # Update cast if provided
+        if 'cast' in updated_movie:
+            # Remove existing cast
+            self.cast_df = self.cast_df[self.cast_df['tmdb_id'] != tmdb_id]
+            
+            # Add new cast
+            new_cast = []
+            for actor in updated_movie['cast']:
+                new_cast.append({'tmdb_id': tmdb_id, 'name': actor})
+                
+            if new_cast:
+                self.cast_df = pd.concat([self.cast_df, pd.DataFrame(new_cast)], ignore_index=True)
+        
+        # Update director if provided
+        if 'director' in updated_movie:
+            # Remove existing director
+            self.crew_df = self.crew_df[~((self.crew_df['tmdb_id'] == tmdb_id) & (self.crew_df['job'] == 'Director'))]
+            
+            # Add new director
+            new_director = {'tmdb_id': tmdb_id, 'name': updated_movie['director'], 'job': 'Director'}
+            self.crew_df = pd.concat([self.crew_df, pd.DataFrame([new_director])], ignore_index=True)
+        
+        # Write updated dataframes to bucket
+        self._write_csv_to_bucket(self.movies_df, self.movies_file)
+        self._write_csv_to_bucket(self.genres_df, self.genres_file)
+        self._write_csv_to_bucket(self.cast_df, self.cast_file)
+        self._write_csv_to_bucket(self.crew_df, self.crew_file)
+        
+        # Update metadata dataframe
+        self._prepare_data()
+        
+        # Rebuild content recommender
+        self.content_recommender = self._initialize_content_recommender()
+        self.hybrid_recommender.content_recommender = self.content_recommender
+        
+        return True

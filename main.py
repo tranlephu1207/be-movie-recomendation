@@ -3,14 +3,36 @@ from typing import List, Optional, Dict, Any
 import os
 import logging
 from auth_api import router as auth_router
-<<<<<<< HEAD
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
-=======
->>>>>>> f7a6782 (feat: fastapi project)
+from dotenv import load_dotenv
 
-# Import TMDb recommendation system
-from tmdb_integration import TMDbRecommendationSystem
+# Load environment variables from .env file
+load_dotenv()
+
+# Import the CloudTMDbRecommendationSystem instead of the local file-based one
+from cloud_tmdb import CloudTMDbRecommendationSystem
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Movie Recommendation API",
+    description="API for movie recommendations using TMDb data",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+      "http://localhost:3000",
+      "https://localhost:3000",
+      "https://movie-mood-app68.vercel.app",
+      "https://be-movie-recomendation.onrender.com"  # Add your backend URL
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Define router
 router = APIRouter(
@@ -34,10 +56,24 @@ def get_recommendation_system():
     global recommendation_system
     
     if recommendation_system is None:
-        data_dir = os.environ.get("DATA_DIR", "./data")
-        recommendation_system = TMDbRecommendationSystem(data_dir=data_dir)
-        # Load existing user ratings if available
-        # recommendation_system.load_user_ratings()
+        # Get bucket name from environment variable
+        bucket_name = os.environ.get("GCS_BUCKET_NAME")
+        if not bucket_name:
+            raise ValueError("GCS_BUCKET_NAME environment variable must be set")
+        
+        # Get data folder from environment variable
+        data_folder = os.environ.get("GCS_DATA_FOLDER", "data")
+        
+        try:
+            # Initialize the cloud-based recommendation system
+            recommendation_system = CloudTMDbRecommendationSystem(
+                bucket_name=bucket_name,
+                data_folder=data_folder
+            )
+            logger.info(f"Cloud recommendation system initialized with bucket: {bucket_name}")
+        except Exception as e:
+            logger.error(f"Failed to initialize cloud recommendation system: {e}")
+            raise
         
     return recommendation_system
 
@@ -45,7 +81,7 @@ def get_recommendation_system():
 async def get_all_movies(
     page: int = 1,
     page_size: int = 20,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Get all movies with pagination.
@@ -100,7 +136,7 @@ async def get_all_movies(
 @router.get("/tmdb/{tmdb_id}")
 async def get_movie_by_tmdb_id(
     tmdb_id: int,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Get movie details by TMDb ID.
@@ -127,7 +163,7 @@ async def get_movie_by_tmdb_id(
 @router.get("/id/{movie_id}")
 async def get_movie_by_id(
     movie_id: int,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Get movie details by internal movie ID (from links.csv).
@@ -155,7 +191,7 @@ async def get_movie_by_id(
 async def get_recommendations(
     query: str,
     top_n: int = 10,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system),
+    rec_sys = Depends(get_recommendation_system),
     user_id: int = None
 ):
     """
@@ -194,7 +230,6 @@ async def get_recommendations(
                 else:
                     # If rec is not a dict, it might be just an ID
                     movie = rec_sys.get_movie_by_id(int(rec))
-                    print(movie)
                     if movie:
                         converted_recs.append({
                             "id": int(movie.get('id', 0)),
@@ -219,7 +254,7 @@ async def get_recommendations(
 async def get_recommendations_by_tmdb_id(
     tmdb_id: int,
     top_n: int = 10,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system),
+    rec_sys = Depends(get_recommendation_system),
     user_id: int = None
 ):
     """
@@ -268,7 +303,7 @@ async def get_recommendations_by_tmdb_id(
 async def get_recommendations_by_id(
     movie_id: int,
     top_n: int = 10,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system),
+    rec_sys = Depends(get_recommendation_system),
     user_id: int = None
 ):
     """
@@ -290,13 +325,13 @@ async def get_recommendations_by_id(
     except Exception as e:
         logger.error(f"Error getting recommendations by movie ID: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
+        
 @router.post("/rating/tmdb/{tmdb_id}")
 async def add_user_rating_by_tmdb_id(
     tmdb_id: int,
     rating: float,
     background_tasks: BackgroundTasks,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system),
+    rec_sys = Depends(get_recommendation_system),
     user_id: int = None
 ):
     """
@@ -322,8 +357,8 @@ async def add_user_rating_by_tmdb_id(
     if not success:
         raise HTTPException(status_code=404, detail=f"Movie with TMDb ID {tmdb_id} not found")
     
-    # Save ratings in background
-    background_tasks.add_task(rec_sys.save_user_ratings)
+    # Note: With the cloud-based implementation, ratings are saved immediately
+    # No need for background task, but keeping it for API compatibility
     
     return {"success": True, "message": f"Rating {rating} added for movie {tmdb_id}"}
 
@@ -332,7 +367,7 @@ async def add_user_rating(
     movie_id: int,
     rating: float,
     background_tasks: BackgroundTasks,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system),
+    rec_sys = Depends(get_recommendation_system),
     user_id: int = None
 ):
     """
@@ -358,8 +393,8 @@ async def add_user_rating(
     if not success:
         raise HTTPException(status_code=404, detail=f"Movie with ID {movie_id} not found")
     
-    # Save ratings in background
-    background_tasks.add_task(rec_sys.save_user_ratings)
+    # Note: With the cloud-based implementation, ratings are saved immediately
+    # No need for background task, but keeping it for API compatibility
     
     return {"success": True, "message": f"Rating {rating} added for movie {movie_id}"}
 
@@ -367,7 +402,7 @@ async def add_user_rating(
 async def search_movies(
     query: str,
     limit: int = 10,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Search for movies by title, genre, director, or actor.
@@ -409,7 +444,7 @@ async def search_movies(
 @router.get("/user/{user_id}/ratings")
 async def get_user_ratings(
     user_id: int,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Get all ratings by a specific user.
@@ -452,7 +487,7 @@ async def get_user_ratings(
 @router.get("/user/{user_id}/rated-movies")
 async def get_user_rated_movies_endpoint(
     user_id: int,
-    rec_sys: TMDbRecommendationSystem = Depends(get_recommendation_system)
+    rec_sys = Depends(get_recommendation_system)
 ):
     """
     Get all movies rated by a specific user with full movie details.
@@ -505,26 +540,51 @@ async def get_user_rated_movies_endpoint(
         logger.error(f"Error getting user rated movies: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Create FastAPI instance
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-      "http://localhost:3000",
-      "https://localhost:3000",
-      "https://movie-mood-app68.vercel.app",
-      "https://be-movie-recomendation.onrender.com"  # Add your backend URL
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@router.put("/update-movie/{tmdb_id}")
+async def update_movie_data(
+    tmdb_id: int,
+    movie_data: dict,
+    rec_sys = Depends(get_recommendation_system)
+):
+    """
+    Update movie data in the cloud storage.
+    
+    Requires authentication.
+    """
+    # Ensure tmdb_id is in the request body
+    if 'tmdb_id' not in movie_data:
+        movie_data['tmdb_id'] = tmdb_id
+    elif movie_data['tmdb_id'] != tmdb_id:
+        raise HTTPException(status_code=400, detail="TMDb ID in path must match TMDb ID in request body")
+    
+    try:
+        success = rec_sys.update_movie_data(movie_data)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Movie with TMDb ID {tmdb_id} not found")
+        
+        return {"success": True, "message": f"Movie data updated for TMDb ID {tmdb_id}"}
+        
+    except Exception as e:
+        logger.error(f"Error updating movie data: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Include routers
-app.include_router(auth_router)
 app.include_router(router)
+app.include_router(auth_router)
 
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+# Create FastAPI instance if this file is run directly
+# (Your app.py already includes this router, so this part would only be used if main.py is run directly)
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # Get port from environment variable or use default
+    port = int(os.environ.get("PORT", 8000))
+    
+    # Run the app
+    uvicorn.run(app, host="0.0.0.0", port=port)

@@ -5,6 +5,8 @@ import time
 import requests
 import pandas as pd
 from typing import Dict, List, Any, Optional, Union
+from utils.gcloud import init_credentials, get_storage_client
+import io
 
 class TMDbDataFetcher:
     """
@@ -14,26 +16,47 @@ class TMDbDataFetcher:
     recommendation system without relying on API calls during runtime.
     """
     
-    def __init__(self, api_key: str, data_dir: str = './data'):
+    def __init__(self, api_key: str = None, bucket_name: str = None, data_folder: str = 'data'):
         """
         Initialize the TMDb data fetcher.
         
         Args:
-            api_key: TMDb API key
-            data_dir: Directory to store CSV files
+            api_key: TMDb API key (can be set via env var TMDB_API_KEY)
+            bucket_name: Name of the Google Cloud Storage bucket (can be set via env var GCS_BUCKET_NAME)
+            data_folder: Folder within the bucket to store data
         """
-        self.api_key = api_key
-        self.data_dir = data_dir
+        # Get API key from env var if not provided
+        self.api_key = api_key or os.environ.get("TMDB_API_KEY")
+        if not self.api_key:
+            raise ValueError("TMDb API key must be provided or TMDB_API_KEY environment variable must be set")
+            
+        # Get bucket name from env var if not provided
+        self.bucket_name = bucket_name or os.environ.get("GCS_BUCKET_NAME")
+        if not self.bucket_name:
+            raise ValueError("Bucket name must be provided or GCS_BUCKET_NAME environment variable must be set")
+            
+        self.data_folder = data_folder
+        
+        # Initialize Google Cloud credentials
+        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable must be set")
+            
+        try:
+            init_credentials(credentials_path)
+            self.storage_client = get_storage_client()
+            self.bucket = self.storage_client.bucket(self.bucket_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Google Cloud Storage: {e}")
+        
+        # Base URL for TMDb API
         self.base_url = "https://api.themoviedb.org/3"
         
-        # Create data directory if it doesn't exist
-        os.makedirs(data_dir, exist_ok=True)
-        
         # Define file paths
-        self.movies_file = os.path.join(data_dir, 'movies.csv')
-        self.genres_file = os.path.join(data_dir, 'genres.csv')
-        self.cast_file = os.path.join(data_dir, 'cast.csv')
-        self.crew_file = os.path.join(data_dir, 'crew.csv')
+        self.movies_file = os.path.join(data_folder, 'movies.csv')
+        self.genres_file = os.path.join(data_folder, 'genres.csv')
+        self.cast_file = os.path.join(data_folder, 'cast.csv')
+        self.crew_file = os.path.join(data_folder, 'crew.csv')
         
         # Initialize files if they don't exist
         self._initialize_files()
@@ -69,6 +92,157 @@ class TMDbDataFetcher:
             with open(self.crew_file, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(['tmdb_id', 'person_id', 'name', 'job', 'department', 'profile_path'])
+    
+    def _make_request(self, endpoint: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """
+        Make a request to the TMDb API.
+        
+        Args:
+            endpoint: API endpoint
+            params: Query parameters
+            
+        Returns:
+            JSON response from the API
+        """
+        if params is None:
+            params = {}
+            
+        # Add API key to parameters
+        params['api_key'] = self.api_key
+        
+        try:
+            response = requests.get(f"{self.base_url}{endpoint}", params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error making request to {endpoint}: {str(e)}")
+            return None
+            
+    def get_movie_details(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get movie details from TMDb API.
+        
+        Args:
+            tmdb_id: TMDb movie ID
+            
+        Returns:
+            Movie details as a dictionary
+        """
+        endpoint = f"/movie/{tmdb_id}"
+        return self._make_request(endpoint)
+        
+    def get_movie_credits(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get movie credits from TMDb API.
+        
+        Args:
+            tmdb_id: TMDb movie ID
+            
+        Returns:
+            Movie credits as a dictionary
+        """
+        endpoint = f"/movie/{tmdb_id}/credits"
+        return self._make_request(endpoint)
+        
+    def search_movies(self, query: str, page: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Search for movies on TMDb.
+        
+        Args:
+            query: Search query
+            page: Page number
+            
+        Returns:
+            Search results as a dictionary
+        """
+        endpoint = "/search/movie"
+        params = {
+            'query': query,
+            'page': page
+        }
+        return self._make_request(endpoint, params)
+        
+    def get_popular_movies(self, page: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Get popular movies from TMDb.
+        
+        Args:
+            page: Page number
+            
+        Returns:
+            Popular movies as a dictionary
+        """
+        endpoint = "/movie/popular"
+        params = {'page': page}
+        return self._make_request(endpoint, params)
+        
+    def get_top_rated_movies(self, page: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Get top rated movies from TMDb.
+        
+        Args:
+            page: Page number
+            
+        Returns:
+            Top rated movies as a dictionary
+        """
+        endpoint = "/movie/top_rated"
+        params = {'page': page}
+        return self._make_request(endpoint, params)
+        
+    def save_movie_data(self, movie_data: Dict[str, Any], tmdb_id: int) -> bool:
+        """
+        Save movie data to Google Cloud Storage.
+        
+        Args:
+            movie_data: Movie data to save
+            tmdb_id: TMDb movie ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Convert to DataFrame
+            df = pd.DataFrame([movie_data])
+            
+            # Save to GCS
+            path = f"{self.data_folder}/movies/{tmdb_id}.csv"
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_content = csv_buffer.getvalue()
+            
+            blob = self.bucket.blob(path)
+            blob.upload_from_string(csv_content, content_type="text/csv")
+            
+            return True
+        except Exception as e:
+            print(f"Error saving movie data for {tmdb_id}: {str(e)}")
+            return False
+            
+    def load_movie_data(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Load movie data from Google Cloud Storage.
+        
+        Args:
+            tmdb_id: TMDb movie ID
+            
+        Returns:
+            Movie data as a dictionary
+        """
+        try:
+            path = f"{self.data_folder}/movies/{tmdb_id}.csv"
+            blob = self.bucket.blob(path)
+            
+            if not blob.exists():
+                return None
+                
+            content = blob.download_as_bytes()
+            df = pd.read_csv(io.BytesIO(content))
+            
+            return df.iloc[0].to_dict()
+        except Exception as e:
+            print(f"Error loading movie data for {tmdb_id}: {str(e)}")
+            return None
     
     def fetch_movie_by_tmdb_id(self, tmdb_id: int, force_update: bool = False) -> Optional[Dict[str, Any]]:
         """
@@ -277,44 +451,6 @@ class TMDbDataFetcher:
                     crew_member.get('profile_path', '')
                 ])
 
-    def search_movies(self, query: str) -> List[Dict[str, Any]]:
-        """
-        Search for movies using the TMDb search API.
-        
-        Args:
-            query: Search query string
-            
-        Returns:
-            List of movie data dictionaries
-        """
-        headers = {
-            "accept": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
-        try:
-            search_url = f"{self.base_url}/search/movie?language=en-US&query={query}&page=1&include_adult=false"
-            response = requests.get(search_url, headers=headers)
-            response.raise_for_status()
-            search_data = response.json()
-            
-            results = search_data.get('results', [])
-            movie_ids = [movie.get('id') for movie in results]
-            
-            # Fetch full details for each movie
-            detailed_results = []
-            for movie_id in movie_ids:
-                movie = self.fetch_movie_by_tmdb_id(movie_id)
-                if movie:
-                    detailed_results.append(movie)
-                    time.sleep(0.25)  # Small delay between requests
-            
-            return detailed_results
-        
-        except requests.exceptions.RequestException as e:
-            print(f"Error searching for movies: {str(e)}")
-            return []
-    
     def export_for_recommendation_system(self) -> Dict[str, pd.DataFrame]:
         """
         Export data in a format suitable for the recommendation system.

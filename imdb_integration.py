@@ -5,304 +5,264 @@ from typing import Dict, List, Any, Optional, Union
 from models.content_based import ContentBasedRecommender
 from models.collaborative import CollaborativeRecommender
 from models.hybrid import HybridRecommender
+from utils.gcloud import init_credentials, get_storage_client
+import io
 
-class IMDbRecommendationSystem:
+class IMDBIntegration:
     """
-    Movie recommendation system using locally stored IMDb data (from CSV files).
+    Integration with IMDB data stored in Google Cloud Storage.
     """
     
-    def __init__(self, data_dir: str = './data'):
+    def __init__(self, bucket_name: str = None, data_folder: str = 'data'):
         """
-        Initialize the recommendation system.
+        Initialize the IMDB integration.
         
         Args:
-            data_dir: Directory with CSV files containing IMDb data
+            bucket_name: Name of the Google Cloud Storage bucket (can be set via env var GCS_BUCKET_NAME)
+            data_folder: Folder within the bucket containing CSV files
         """
-        self.data_dir = data_dir
-        self.movies_file = os.path.join(data_dir, 'movies.csv')
-        self.genres_file = os.path.join(data_dir, 'genres.csv')
-        self.ratings_file = os.path.join(data_dir, 'ratings.csv')
-        self.cast_file = os.path.join(data_dir, 'cast.csv')
+        # Get bucket name from env var if not provided
+        self.bucket_name = bucket_name or os.environ.get("GCS_BUCKET_NAME")
+        if not self.bucket_name:
+            raise ValueError("Bucket name must be provided or GCS_BUCKET_NAME environment variable must be set")
+            
+        self.data_folder = data_folder
+        
+        # CSV file paths in the bucket
+        self.movies_file = f"{data_folder}/imdb_movies.csv"
+        self.ratings_file = f"{data_folder}/imdb_ratings.csv"
+        self.links_file = f"{data_folder}/imdb_links.csv"
+        
+        # Initialize Google Cloud credentials
+        credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credentials_path:
+            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable must be set")
+            
+        try:
+            init_credentials(credentials_path)
+            self.storage_client = get_storage_client()
+            self.bucket = self.storage_client.bucket(self.bucket_name)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Google Cloud Storage: {e}")
         
         # Check if necessary files exist
         self._check_files()
         
-        # Load data
-        self.movies_df = pd.read_csv(self.movies_file)
-        self.genres_df = pd.read_csv(self.genres_file)
-        self.cast_df = pd.read_csv(self.cast_file)
+        # Load data from GCS
+        self.movies_df = self._read_csv_from_bucket(self.movies_file)
+        self.ratings_df = self._read_csv_from_bucket(self.ratings_file)
+        self.links_df = self._read_csv_from_bucket(self.links_file)
         
-        # Prepare data for recommendation system
-        self._prepare_data()
-        
-        # Initialize recommenders
-        self.content_recommender = self._initialize_content_recommender()
-        self.collaborative_recommender = self._initialize_collaborative_recommender()
-        self.hybrid_recommender = HybridRecommender(
-            content_recommender=self.content_recommender,
-            collab_recommender=self.collaborative_recommender
-        )
-    
-    def _check_files(self) -> None:
-        """Check if necessary files exist."""
-        files = [self.movies_file, self.genres_file, self.cast_file]
-        for file in files:
-            if not os.path.exists(file):
-                raise FileNotFoundError(f"Required file not found: {file}")
-    
-    def _prepare_data(self) -> None:
-        """Prepare data for recommendation system."""
-        # Preprocess movies dataframe
-        self.movies_df['id'] = self.movies_df.index + 1  # Create unique ID
-        
-        # Create metadata dataframe for content-based filtering
-        self.metadata_df = self.movies_df[['id', 'imdb_id', 'title', 'imdb_rating', 'plot', 'director']].copy()
-        self.metadata_df = self.metadata_df.rename(columns={
-            'imdb_rating': 'vote_average',
-            'plot': 'overview'
-        })
-        
-        # Add genres as a list for each movie
-        genres_grouped = self.genres_df.groupby('imdb_id')['genre'].apply(list).reset_index()
-        self.metadata_df = pd.merge(
-            self.metadata_df,
-            genres_grouped,
-            on='imdb_id',
-            how='left'
-        )
-        
-        # Add cast as a list for each movie
-        cast_grouped = self.cast_df.groupby('imdb_id')['actor'].apply(list).reset_index()
-        self.metadata_df = pd.merge(
-            self.metadata_df,
-            cast_grouped,
-            on='imdb_id',
-            how='left',
-            suffixes=('', '_cast')
-        )
-        self.metadata_df = self.metadata_df.rename(columns={'actor': 'cast'})
-        
-        # Fill NaN values
-        self.metadata_df['genre'] = self.metadata_df['genre'].apply(lambda x: [] if isinstance(x, float) and np.isnan(x) else x)
-        self.metadata_df['cast'] = self.metadata_df['cast'].apply(lambda x: [] if isinstance(x, float) and np.isnan(x) else x)
-        self.metadata_df['overview'] = self.metadata_df['overview'].fillna('')
-        
-        # Create user ratings dataframe for collaborative filtering
-        self.user_ratings_df = pd.DataFrame(columns=['userId', 'movieId', 'rating'])
-    
-    def _initialize_content_recommender(self) -> ContentBasedRecommender:
-        """Initialize content-based recommender with processed data."""
-        # Create a custom initializer that doesn't need file paths
-        class IMDbContentRecommender(ContentBasedRecommender):
-            def __init__(self, metadata_df):
-                self.metadata_df = metadata_df
-                self.nlp = None  # Initialize when needed
-                self.vectorizer = None
-                self.tfidf_matrix = None
-                
-                # Process data
-                self.process_data()
-                self.create_profiles()
-                self.build_model()
-                
-            def load_data(self, *args, **kwargs):
-                # Override to skip loading from files
-                pass
-        
-        # Initialize and return the recommender
-        return IMDbContentRecommender(self.metadata_df)
-    
-    def _initialize_collaborative_recommender(self) -> CollaborativeRecommender:
-        """Initialize collaborative filtering recommender."""
-        # Create a custom initializer that doesn't need file paths
-        recommender = CollaborativeRecommender()
-        recommender.ratings_df = self.user_ratings_df
-        
-        # Only build model if we have ratings
-        if len(self.user_ratings_df) > 0:
-            recommender.build_model()
-            
-        return recommender
-    
-    def get_movie_by_imdb_id(self, imdb_id: str) -> Optional[Dict[str, Any]]:
+    def _read_csv_from_bucket(self, file_path: str) -> pd.DataFrame:
         """
-        Get movie details by IMDb ID.
+        Read a CSV file from Google Cloud Storage bucket.
         
         Args:
-            imdb_id: IMDb ID (with or without 'tt' prefix)
+            file_path: Path to CSV file in the bucket
             
         Returns:
-            Movie details dictionary or None if not found
+            Pandas DataFrame with the CSV data
         """
-        # Add 'tt' prefix if not already present
-        if imdb_id and not imdb_id.startswith('tt'):
-            imdb_id = f"tt{imdb_id}"
+        blob = self.bucket.blob(file_path)
+        if not blob.exists():
+            raise FileNotFoundError(f"File not found in bucket: {file_path}")
             
-        # Find movie in dataframe
+        # Download as bytes and convert to DataFrame
+        content = blob.download_as_bytes()
+        return pd.read_csv(io.BytesIO(content))
+        
+    def _write_csv_to_bucket(self, df: pd.DataFrame, file_path: str) -> None:
+        """
+        Write a DataFrame as CSV to Google Cloud Storage bucket.
+        
+        Args:
+            df: Pandas DataFrame to write
+            file_path: Path in the bucket where to save the CSV
+        """
+        # Convert DataFrame to CSV string
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        # Upload to bucket
+        blob = self.bucket.blob(file_path)
+        blob.upload_from_string(csv_content, content_type="text/csv")
+        
+    def _check_files(self) -> None:
+        """Check if necessary files exist in the bucket."""
+        required_files = [self.movies_file, self.ratings_file, self.links_file]
+        missing_files = []
+        
+        for file_path in required_files:
+            blob = self.bucket.blob(file_path)
+            if not blob.exists():
+                missing_files.append(file_path)
+        
+        if missing_files:
+            raise FileNotFoundError(f"Required files not found in bucket: {', '.join(missing_files)}")
+            
+    def get_movie_by_imdb_id(self, imdb_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get movie details by IMDB ID.
+        
+        Args:
+            imdb_id: IMDB ID (e.g., 'tt0111161')
+            
+        Returns:
+            Movie details as a dictionary
+        """
         movie = self.movies_df[self.movies_df['imdb_id'] == imdb_id]
         if len(movie) == 0:
             return None
             
-        movie_data = movie.iloc[0].to_dict()
+        return movie.iloc[0].to_dict()
         
-        # Add genres
-        genres = self.genres_df[self.genres_df['imdb_id'] == imdb_id]['genre'].tolist()
-        movie_data['genres'] = genres
-        
-        # Add cast
-        cast = self.cast_df[self.cast_df['imdb_id'] == imdb_id]['actor'].tolist()
-        movie_data['cast'] = cast
-        
-        return movie_data
-    
-    def get_recommendations(self, query: str, user_id: Optional[int] = None, top_n: int = 10) -> List[Dict[str, Any]]:
+    def get_movie_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """
-        Get movie recommendations based on a text query.
+        Get movie details by title.
         
         Args:
-            query: Text query for content-based filtering
-            user_id: Optional user ID for collaborative filtering
-            top_n: Number of recommendations to return
+            title: Movie title
             
         Returns:
-            List of movie recommendations
+            Movie details as a dictionary
         """
-        if user_id is not None and len(self.user_ratings_df) > 0:
-            # Use hybrid recommendations
-            recommendations = self.hybrid_recommender.get_recommendations(
-                user_id=user_id,
-                query=query,
-                top_n=top_n
-            )
-        else:
-            # Use content-based only
-            recommendations = self.content_recommender.get_recommendations(
-                query=query,
-                top_n=top_n
-            )
+        # Case-insensitive search
+        movie = self.movies_df[self.movies_df['title'].str.lower() == title.lower()]
+        if len(movie) == 0:
+            return None
             
-        # Convert to list of dictionaries
-        return recommendations.to_dict(orient='records')
-    
-    def get_recommendations_by_imdb_id(self, imdb_id: str, user_id: Optional[int] = None, top_n: int = 10) -> List[Dict[str, Any]]:
+        return movie.iloc[0].to_dict()
+        
+    def get_movie_ratings(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get movie recommendations based on a similar movie.
+        Get movie ratings by IMDB ID.
         
         Args:
-            imdb_id: IMDb ID of the reference movie
-            user_id: Optional user ID for collaborative filtering
-            top_n: Number of recommendations to return
+            imdb_id: IMDB ID (e.g., 'tt0111161')
             
         Returns:
-            List of movie recommendations
+            Movie ratings as a dictionary
         """
-        # Get movie details
-        movie = self.get_movie_by_imdb_id(imdb_id)
-        if movie is None:
-            return []
+        ratings = self.ratings_df[self.ratings_df['imdb_id'] == imdb_id]
+        if len(ratings) == 0:
+            return None
             
-        # Create query from movie details
-        query = f"{movie['title']} {' '.join(movie['genres']) if 'genres' in movie else ''} {movie['plot'] if 'plot' in movie else ''}"
+        return ratings.iloc[0].to_dict()
         
-        # Get recommendations
-        return self.get_recommendations(query, user_id, top_n)
-    
-    def add_user_rating(self, user_id: int, imdb_id: str, rating: float) -> bool:
+    def get_movie_links(self, imdb_id: str) -> Optional[Dict[str, Any]]:
         """
-        Add a user rating.
+        Get movie links by IMDB ID.
         
         Args:
-            user_id: User ID
-            imdb_id: IMDb ID of the movie
-            rating: Rating (0.5-5.0)
+            imdb_id: IMDB ID (e.g., 'tt0111161')
+            
+        Returns:
+            Movie links as a dictionary
+        """
+        links = self.links_df[self.links_df['imdb_id'] == imdb_id]
+        if len(links) == 0:
+            return None
+            
+        return links.iloc[0].to_dict()
+        
+    def search_movies(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search for movies by title.
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of movie details dictionaries
+        """
+        # Case-insensitive search
+        results = self.movies_df[
+            self.movies_df['title'].str.lower().str.contains(query.lower())
+        ].head(limit)
+        
+        return results.to_dict('records')
+        
+    def get_top_rated_movies(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get top rated movies.
+        
+        Args:
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of movie details dictionaries
+        """
+        # Merge movies and ratings
+        merged = pd.merge(
+            self.movies_df,
+            self.ratings_df,
+            on='imdb_id',
+            how='inner'
+        )
+        
+        # Sort by rating and get top movies
+        top_movies = merged.sort_values('rating', ascending=False).head(limit)
+        
+        return top_movies.to_dict('records')
+        
+    def update_movie_data(self, movie_data: Dict[str, Any]) -> bool:
+        """
+        Update movie data in the bucket.
+        
+        Args:
+            movie_data: Dictionary with movie data (must include imdb_id)
             
         Returns:
             True if successful, False otherwise
         """
-        # Find movie ID
-        movie = self.movies_df[self.movies_df['imdb_id'] == imdb_id]
-        if len(movie) == 0:
+        if 'imdb_id' not in movie_data:
             return False
             
-        movie_id = movie.iloc[0]['id']
+        imdb_id = movie_data['imdb_id']
         
-        # Add rating
-        new_rating = pd.DataFrame({
-            'userId': [user_id],
-            'movieId': [movie_id],
-            'rating': [rating]
-        })
+        # Update movies dataframe
+        movie_idx = self.movies_df[self.movies_df['imdb_id'] == imdb_id].index
+        if len(movie_idx) == 0:
+            return False
+            
+        # Update relevant fields in movies dataframe
+        for field in ['title', 'year', 'genres', 'director', 'actors']:
+            if field in movie_data:
+                self.movies_df.loc[movie_idx, field] = movie_data[field]
         
-        # Remove existing rating if present
-        self.user_ratings_df = self.user_ratings_df[
-            ~((self.user_ratings_df['userId'] == user_id) & 
-              (self.user_ratings_df['movieId'] == movie_id))
-        ]
-        
-        # Add new rating
-        self.user_ratings_df = pd.concat([self.user_ratings_df, new_rating], ignore_index=True)
-        
-        # Rebuild collaborative model
-        self.collaborative_recommender.ratings_df = self.user_ratings_df
-        self.collaborative_recommender.build_model()
+        # Write updated dataframe to bucket
+        self._write_csv_to_bucket(self.movies_df, self.movies_file)
         
         return True
-    
-    def save_user_ratings(self, file_path: Optional[str] = None) -> None:
-        """
-        Save user ratings to CSV file.
-        
-        Args:
-            file_path: Path to save ratings (default: data_dir/user_ratings.csv)
-        """
-        if file_path is None:
-            file_path = os.path.join(self.data_dir, 'user_ratings.csv')
-            
-        self.user_ratings_df.to_csv(file_path, index=False)
-    
-    def load_user_ratings(self, file_path: Optional[str] = None) -> None:
-        """
-        Load user ratings from CSV file.
-        
-        Args:
-            file_path: Path to load ratings from (default: data_dir/user_ratings.csv)
-        """
-        if file_path is None:
-            file_path = os.path.join(self.data_dir, 'user_ratings.csv')
-            
-        if os.path.exists(file_path):
-            self.user_ratings_df = pd.read_csv(file_path)
-            
-            # Rebuild collaborative model
-            self.collaborative_recommender.ratings_df = self.user_ratings_df
-            self.collaborative_recommender.build_model()
 
 # Example usage
 if __name__ == "__main__":
-    # Initialize recommendation system
-    rec_sys = IMDbRecommendationSystem()
+    # Initialize IMDB integration
+    imdb_integration = IMDBIntegration()
     
     # Get movie details
-    movie = rec_sys.get_movie_by_imdb_id("tt0114709")  # Toy Story
+    movie = imdb_integration.get_movie_by_imdb_id("tt0114709")  # Toy Story
     print(f"Movie: {movie['title']} ({movie['year']})")
     print(f"Genres: {', '.join(movie['genres'])}")
     print(f"Rating: {movie['imdb_rating']}")
     print(f"Plot: {movie['plot'][:100]}...")
     
     # Get recommendations based on a movie
-    recommendations = rec_sys.get_recommendations_by_imdb_id("tt0114709", top_n=5)
+    recommendations = imdb_integration.get_recommendations_by_imdb_id("tt0114709", top_n=5)
     print("\nRecommendations:")
     for i, rec in enumerate(recommendations, 1):
         print(f"{i}. {rec['title']} - {rec['vote_average']}")
     
     # Add a user rating
-    rec_sys.add_user_rating(user_id=1, imdb_id="tt0114709", rating=5.0)
+    imdb_integration.add_user_rating(user_id=1, imdb_id="tt0114709", rating=5.0)
     
     # Get personalized recommendations
-    personalized_recs = rec_sys.get_recommendations_by_imdb_id("tt0114709", user_id=1, top_n=5)
+    personalized_recs = imdb_integration.get_recommendations_by_imdb_id("tt0114709", user_id=1, top_n=5)
     print("\nPersonalized recommendations:")
     for i, rec in enumerate(personalized_recs, 1):
         print(f"{i}. {rec['title']} - {rec['vote_average']}")
     
     # Save user ratings
-    rec_sys.save_user_ratings()
+    imdb_integration.save_user_ratings()
