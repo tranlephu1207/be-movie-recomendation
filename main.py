@@ -6,12 +6,15 @@ from auth_api import router as auth_router
 import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from datetime import datetime
+import uuid
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Import the CloudTMDbRecommendationSystem instead of the local file-based one
 from cloud_tmdb import CloudTMDbRecommendationSystem
+from models.metrics import RecommendationMetrics
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -50,6 +53,9 @@ logger = logging.getLogger(__name__)
 
 # Global instance of recommendation system
 recommendation_system = None
+
+# Initialize metrics tracker
+metrics = RecommendationMetrics()
 
 def get_recommendation_system():
     """Get or initialize recommendation system."""
@@ -192,12 +198,20 @@ async def get_recommendations(
     query: str,
     top_n: int = 10,
     rec_sys = Depends(get_recommendation_system),
-    user_id: int = None
+    user_id: int = None,
+    experiment_id: Optional[str] = None
 ):
     """
     Get movie recommendations based on a text query.
     
-    Requires authentication.
+    Args:
+        query: Text query for content-based filtering
+        top_n: Number of recommendations to return
+        user_id: Optional user ID for collaborative filtering
+        experiment_id: Optional experiment ID for AB testing
+        
+    Returns:
+        List of movie recommendations with tracking IDs
     """
     try:
         recommendations = rec_sys.get_recommendations(
@@ -206,73 +220,13 @@ async def get_recommendations(
             top_n=top_n
         )
         
-        # Convert recommendations to native Python types
-        if isinstance(recommendations, list):
-            converted_recs = []
-            for rec in recommendations:
-                if isinstance(rec, dict):
-                    converted_rec = {
-                        "id": int(rec.get('movie_data', {}).get('id', 0)),
-                        "title": str(rec.get('movie_data', {}).get('title', '')),
-                        "vote_average": float(rec.get('movie_data', {}).get('vote_average', 0.0)),
-                        "genres": [str(g) for g in rec.get('movie_data', {}).get('genres', [])],
-                        "tmdb_id": int(rec.get('movie_data', {}).get('tmdb_id', 0)),
-                        "imdb_id": str(rec.get('movie_data', {}).get('imdb_id', '')),
-                        "release_date": str(rec.get('movie_data', {}).get('release_date', '')),
-                        "director": str(rec.get('movie_data', {}).get('director', '')),
-                        "cast": [str(c) for c in rec.get('movie_data', {}).get('cast', [])],
-                        "overview": str(rec.get('movie_data', {}).get('overview', ''))
-                    }
-                    # Add similarity score if present
-                    if 'similarity' in rec:
-                        converted_rec["similarity_score"] = float(rec['similarity'])
-                    converted_recs.append(converted_rec)
-                else:
-                    # If rec is not a dict, it might be just an ID
-                    movie = rec_sys.get_movie_by_id(int(rec))
-                    if movie:
-                        converted_recs.append({
-                            "id": int(movie.get('id', 0)),
-                            "tmdb_id": int(movie.get('tmdb_id', 0)),
-                            "imdb_id": str(movie.get('imdb_id', '')),
-                            "title": str(movie.get('title', '')),
-                            "release_date": str(movie.get('release_date', '')),
-                            "genres": [str(g) for g in movie.get('genres', [])],
-                            "director": str(movie.get('director', '')),
-                            "cast": [str(c) for c in movie.get('cast', [])],
-                            "overview": str(movie.get('overview', '')),
-                            "vote_average": float(movie.get('vote_average', 0.0))
-                        })
-            return converted_recs
-        return []
-        
-    except Exception as e:
-        logger.error(f"Error getting recommendations: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/recommend/tmdb/{tmdb_id}")
-async def get_recommendations_by_tmdb_id(
-    tmdb_id: int,
-    top_n: int = 10,
-    rec_sys = Depends(get_recommendation_system),
-    user_id: int = None
-):
-    """
-    Get movie recommendations based on a movie's TMDb ID.
-    
-    Requires authentication.
-    """
-    try:
-        recommendations = rec_sys.get_recommendations_by_tmdb_id(
-            tmdb_id=tmdb_id,
-            user_id=user_id,
-            top_n=top_n
-        )
-        
         if not recommendations:
-            raise HTTPException(status_code=404, detail=f"Movie with TMDb ID {tmdb_id} not found or no recommendations available")
+            return []
+            
+        # Generate a unique recommendation ID for tracking
+        recommendation_id = str(uuid.uuid4())
         
-        # Convert recommendations to native Python types
+        # Convert recommendations to native Python types and add tracking ID
         converted_recs = []
         for rec in recommendations:
             if isinstance(rec, dict):
@@ -286,7 +240,82 @@ async def get_recommendations_by_tmdb_id(
                     "director": str(rec.get('director', '')),
                     "cast": [str(c) for c in rec.get('cast', [])],
                     "overview": str(rec.get('overview', '')),
-                    "vote_average": float(rec.get('vote_average', 0.0))
+                    "vote_average": float(rec.get('vote_average', 0.0)),
+                    "recommendation_id": recommendation_id  # Add tracking ID
+                }
+                converted_recs.append(converted_rec)
+            else:
+                # If rec is not a dict, it might be just an ID
+                movie = rec_sys.get_movie_by_id(int(rec))
+                if movie:
+                    converted_recs.append({
+                        "id": int(movie.get('id', 0)),
+                        "tmdb_id": int(movie.get('tmdb_id', 0)),
+                        "imdb_id": str(movie.get('imdb_id', '')),
+                        "title": str(movie.get('title', '')),
+                        "release_date": str(movie.get('release_date', '')),
+                        "genres": [str(g) for g in movie.get('genres', [])],
+                        "director": str(movie.get('director', '')),
+                        "cast": [str(c) for c in movie.get('cast', [])],
+                        "overview": str(movie.get('overview', '')),
+                        "vote_average": float(movie.get('vote_average', 0.0)),
+                        "recommendation_id": recommendation_id  # Add tracking ID
+                    })
+        return converted_recs
+        
+    except Exception as e:
+        logger.error(f"Error getting recommendations: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/recommend/tmdb/{tmdb_id}")
+async def get_recommendations_by_tmdb_id(
+    tmdb_id: int,
+    top_n: int = 10,
+    rec_sys = Depends(get_recommendation_system),
+    user_id: int = None,
+    experiment_id: Optional[str] = None
+):
+    """
+    Get movie recommendations based on a movie's TMDb ID.
+    
+    Args:
+        tmdb_id: TMDb ID of the reference movie
+        top_n: Number of recommendations to return
+        user_id: Optional user ID for collaborative filtering
+        experiment_id: Optional experiment ID for AB testing
+        
+    Returns:
+        List of movie recommendations with tracking IDs
+    """
+    try:
+        recommendations = rec_sys.get_recommendations_by_tmdb_id(
+            tmdb_id=tmdb_id,
+            user_id=user_id,
+            top_n=top_n
+        )
+        
+        if not recommendations:
+            raise HTTPException(status_code=404, detail=f"Movie with TMDb ID {tmdb_id} not found or no recommendations available")
+        
+        # Generate a unique recommendation ID for tracking
+        recommendation_id = str(uuid.uuid4())
+        
+        # Convert recommendations to native Python types and add tracking ID
+        converted_recs = []
+        for rec in recommendations:
+            if isinstance(rec, dict):
+                converted_rec = {
+                    "id": int(rec.get('id', 0)),
+                    "tmdb_id": int(rec.get('tmdb_id', 0)),
+                    "imdb_id": str(rec.get('imdb_id', '')),
+                    "title": str(rec.get('title', '')),
+                    "release_date": str(rec.get('release_date', '')),
+                    "genres": [str(g) for g in rec.get('genres', [])],
+                    "director": str(rec.get('director', '')),
+                    "cast": [str(c) for c in rec.get('cast', [])],
+                    "overview": str(rec.get('overview', '')),
+                    "vote_average": float(rec.get('vote_average', 0.0)),
+                    "recommendation_id": recommendation_id  # Add tracking ID
                 }
                 # Add similarity score if present
                 if 'similarity' in rec:
@@ -567,6 +596,104 @@ async def update_movie_data(
         
     except Exception as e:
         logger.error(f"Error updating movie data: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/metrics/track")
+async def track_interaction(
+    user_id: int,
+    movie_id: int,
+    recommendation_id: str,
+    interaction_type: str,
+    experiment_id: Optional[str] = None
+):
+    """
+    Track a user interaction with a recommended movie.
+    
+    Args:
+        user_id: User identifier
+        movie_id: Movie identifier
+        recommendation_id: ID of the recommendation that led to the interaction
+        interaction_type: Type of interaction (e.g., 'click', 'watch', 'rate')
+        experiment_id: Optional experiment identifier for AB testing
+    """
+    try:
+        metrics.track_interaction(
+            user_id=user_id,
+            movie_id=movie_id,
+            recommendation_id=recommendation_id,
+            interaction_type=interaction_type,
+            experiment_id=experiment_id
+        )
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error tracking interaction: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/metrics/summary")
+async def get_metrics_summary():
+    """
+    Get summary of all recommendation metrics.
+    
+    Returns:
+        Dictionary containing summary statistics
+    """
+    try:
+        return metrics.get_summary()
+    except Exception as e:
+        logger.error(f"Error getting metrics summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/metrics/experiment/{experiment_id}")
+async def get_experiment_metrics(experiment_id: str):
+    """
+    Get metrics for a specific experiment.
+    
+    Args:
+        experiment_id: Experiment identifier
+        
+    Returns:
+        Dictionary containing experiment metrics
+    """
+    try:
+        experiment_metrics = metrics.get_experiment_summary(experiment_id)
+        if experiment_metrics is None:
+            raise HTTPException(status_code=404, detail=f"Experiment {experiment_id} not found")
+        return experiment_metrics
+    except Exception as e:
+        logger.error(f"Error getting experiment metrics: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/metrics/interactions")
+async def get_interactions(
+    user_id: Optional[int] = None,
+    movie_id: Optional[int] = None,
+    experiment_id: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None
+):
+    """
+    Get filtered interactions based on criteria.
+    
+    Args:
+        user_id: Filter by user ID
+        movie_id: Filter by movie ID
+        experiment_id: Filter by experiment ID
+        start_time: Filter by start time
+        end_time: Filter by end time
+        
+    Returns:
+        List of matching interactions
+    """
+    try:
+        return metrics.get_interactions(
+            user_id=user_id,
+            movie_id=movie_id,
+            experiment_id=experiment_id,
+            start_time=start_time,
+            end_time=end_time
+        )
+    except Exception as e:
+        logger.error(f"Error getting interactions: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Include routers
