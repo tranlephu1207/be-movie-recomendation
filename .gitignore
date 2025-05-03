@@ -33,3 +33,4 @@ credentials
 pipelines/*.csv
 pipelines/*.yaml
 pipelines/*.pkl
+.env
