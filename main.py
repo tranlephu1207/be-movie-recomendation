@@ -28,13 +28,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
       "http://localhost:3000",
-      "https://localhost:3000",
-      "https://movie-mood-app68.vercel.app/",
-      "https://be-movie-recomendation.onrender.com/"  # Add your backend URL
+      "https://movie-mood-app68.vercel.app/"
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
 )
 
 # Define router
