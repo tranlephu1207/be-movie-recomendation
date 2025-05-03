@@ -26,9 +26,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
       "http://localhost:3000",
-      "https://movie-mood-app68.vercel.app",
+      "https://movie-mood-app68.vercel.app/",
       "https://localhost:3000",
-      "https://be-movie-recomendation.onrender.com"
+      "https://be-movie-recomendation.onrender.com/"
     ],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
