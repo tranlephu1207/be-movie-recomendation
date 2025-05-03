@@ -12,23 +12,41 @@ class CollaborativeRecommender:
     """
     
     def __init__(self, ratings_path: Optional[str] = None):
-        if ratings_path is None:
-            ratings_path = os.getenv('RATINGS_PATH')
-        """
-        Initialize the collaborative recommender.
-        
-        Args:
-            ratings_path: Path to ratings CSV file (optional)
-        """
-        self.model = None
-        self.ratings_df = None
-        self.reader = Reader(rating_scale=(0.5, 5.0))
-        
-        svd_gcs_url = os.getenv("SVD_GCS_URL")
-        self.load_model_from_gcs(svd_gcs_url)
-        if ratings_path:
-            self.load_data(ratings_path)
-            self.build_model()
+      """
+      Initialize the collaborative recommender.
+      
+      Args:
+          ratings_path: Path to ratings CSV file (optional)
+      """
+      if ratings_path is None:
+        ratings_path = os.getenv('RATINGS_PATH')
+      self.model = None
+      self.ratings_df = None
+      self.reader = Reader(rating_scale=(0.5, 5.0))
+      
+      # Try to load from GCS first
+      svd_gcs_url = os.getenv("SVD_GCS_URL")
+      if svd_gcs_url:
+          try:
+              # This creates a new instance but we just want the model
+              recommender = self.load_model_from_gcs(svd_gcs_url)
+              self.model = recommender.model
+              self.reader = recommender.reader
+              print("Successfully loaded model from GCS")
+          except Exception as e:
+              print(f"Error loading model from GCS: {e}")
+              self.model = SVD()  # Initialize with default SVD model
+      else:
+          print("No GCS URL provided, initializing new SVD model")
+          self.model = SVD()  # Initialize with default SVD model
+      
+      # Load and build model from ratings if provided
+      if ratings_path:
+          self.load_data(ratings_path)
+          # Only rebuild if we need to
+          if self.ratings_df is not None and len(self.ratings_df) > 0:
+              print("Building model from ratings data")
+              self.build_model()
     
     def load_data(self, ratings_path: str) -> None:
         """
