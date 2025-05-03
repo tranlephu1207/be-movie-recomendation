@@ -34,7 +34,7 @@ def get_recommendation_system():
         data_dir = os.environ.get("DATA_DIR", "./data")
         recommendation_system = TMDbRecommendationSystem(data_dir=data_dir)
         # Load existing user ratings if available
-        recommendation_system.load_user_ratings()
+        # recommendation_system.load_user_ratings()
         
     return recommendation_system
 

@@ -28,3 +28,8 @@ archive.zip
 
 # macOS
 .DS_Store
+# gcloud
+credentials
+pipelines/*.csv
+pipelines/*.yaml
+pipelines/*.pkl
