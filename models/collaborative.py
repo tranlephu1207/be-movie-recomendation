@@ -12,6 +12,8 @@ class CollaborativeRecommender:
     """
     
     def __init__(self, ratings_path: Optional[str] = None):
+        if ratings_path is None:
+            ratings_path = os.getenv('RATINGS_PATH')
         """
         Initialize the collaborative recommender.
         
