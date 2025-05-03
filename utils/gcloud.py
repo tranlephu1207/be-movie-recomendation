@@ -75,3 +75,29 @@ def download_blob(
 
     # Download the blob
     blob.download_to_filename(destination_file_name)
+
+
+def upload_blob(
+    bucket_name: str, source_file_name: str, destination_blob_name: str
+) -> None:
+    """
+    Uploads a file to Google Cloud Storage.
+
+    Args:
+        bucket_name: Name of the GCS bucket
+        source_file_name: Local path to the file to upload
+        destination_blob_name: Path where the file should be stored in GCS bucket
+
+    Raises:
+        RuntimeError: If credentials have not been initialized
+        FileNotFoundError: If source file doesn't exist
+    """
+    if not os.path.exists(source_file_name):
+        raise FileNotFoundError(f"Source file not found: {source_file_name}")
+
+    storage_client = get_storage_client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+
+    # Upload the file
+    blob.upload_from_filename(source_file_name)

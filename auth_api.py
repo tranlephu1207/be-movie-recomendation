@@ -1,9 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import os
 
 from models.auth import AuthManager
 from schemas.auth import UserSignUp, UserLogin, Token, UserResponse, LoginResponse, TokenRefresh
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 # Initialize router
 router = APIRouter(
     prefix="/auth",
@@ -12,7 +16,10 @@ router = APIRouter(
 )
 
 # Initialize Auth Manager
-auth_manager = AuthManager()
+bucket_name = os.getenv("GCS_BUCKET_NAME")
+if not bucket_name:
+    raise ValueError("GCS_BUCKET_NAME environment variable must be set")
+auth_manager = AuthManager(bucket_name=bucket_name)
 
 # OAuth2 password bearer for token authentication
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -43,7 +50,6 @@ async def signup(user_data: UserSignUp):
         email=user_data.email,
         password=user_data.password
     )
-    print(user)
     
     if user is None:
         raise HTTPException(
