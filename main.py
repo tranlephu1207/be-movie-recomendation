@@ -20,19 +20,7 @@ from models.metrics import RecommendationMetrics
 app = FastAPI(
     title="Movie Recommendation API",
     description="API for movie recommendations using TMDb data",
-    version="1.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-      "http://localhost:3000",
-      "https://movie-mood-app68.vercel.app/"
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    version="1.0.1"
 )
 
 # Define router
@@ -693,6 +681,19 @@ async def get_interactions(
     except Exception as e:
         logger.error(f"Error getting interactions: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+      "http://localhost:3000",
+      "https://localhost:3000",
+      "https://movie-mood-app68.vercel.app",
+      "https://be-movie-recomendation.onrender.com"  # Add your backend URL
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Include routers
 app.include_router(router)
